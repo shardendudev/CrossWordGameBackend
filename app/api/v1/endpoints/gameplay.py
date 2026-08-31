@@ -66,19 +66,36 @@ async def submitTelemetry(
             detail=f"User with ID '{payload.user_id}' not found."
         )
 
-    # 1. Record Telemetry
-    telemetry = UserGameplayTelemetry(
-        session_id=payload.session_id,
-        user_id=payload.user_id,
-        level_id=payload.level_id,
-        imdb_id=payload.imdb_id,
-        time_taken_seconds=payload.time_taken_seconds,
-        free_hints_used=payload.free_hints_used,
-        premium_hints_used=0,
-        cell_error_count=payload.cell_error_count,
-        is_completed=payload.is_completed
-    )
-    db.add(telemetry)
+    # 1. Record Telemetry for each solved IMDb ID (for movie-level deduplication)
+    imdb_ids = payload.imdb_ids or []
+    if imdb_ids:
+        for imdb_id in imdb_ids:
+            telemetry = UserGameplayTelemetry(
+                session_id=uuid.uuid4(),
+                user_id=payload.user_id,
+                level_id=payload.level_id,
+                imdb_id=imdb_id,
+                time_taken_seconds=payload.time_taken_seconds,
+                free_hints_used=payload.free_hints_used,
+                premium_hints_used=0,
+                cell_error_count=payload.cell_error_count,
+                is_completed=payload.is_completed
+            )
+            db.add(telemetry)
+    else:
+        # Fallback if no specific movie IDs were provided
+        telemetry = UserGameplayTelemetry(
+            session_id=payload.session_id,
+            user_id=payload.user_id,
+            level_id=payload.level_id,
+            imdb_id=None,
+            time_taken_seconds=payload.time_taken_seconds,
+            free_hints_used=payload.free_hints_used,
+            premium_hints_used=0,
+            cell_error_count=payload.cell_error_count,
+            is_completed=payload.is_completed
+        )
+        db.add(telemetry)
 
     # 2. Skill Level Update
     prev_skill = user.current_skill_level
@@ -91,16 +108,17 @@ async def submitTelemetry(
     new_skill = updateUserSkill(currentSkill=prev_skill, pLevel=p_level)
     skill_delta = round(new_skill - prev_skill, 3)
 
-    # 3. Taste Vector Update (if solved movie provided)
-    if payload.imdb_id:
-        movie_res = await db.execute(select(Movie).where(Movie.imdb_id == payload.imdb_id))
-        movie = movie_res.scalars().first()
-        if movie and movie.semantic_embedding is not None:
-            updated_taste = updateTasteVector(
-                currentVector=list(user.taste_vector) if user.taste_vector is not None else None,
-                solvedMovieVector=list(movie.semantic_embedding)
-            )
-            user.taste_vector = updated_taste
+    # 3. Taste Vector Update for solved movies
+    if imdb_ids:
+        for imdb_id in imdb_ids:
+            movie_res = await db.execute(select(Movie).where(Movie.imdb_id == imdb_id))
+            movie = movie_res.scalars().first()
+            if movie and movie.semantic_embedding is not None:
+                updated_taste = updateTasteVector(
+                    currentVector=list(user.taste_vector) if user.taste_vector is not None else None,
+                    solvedMovieVector=list(movie.semantic_embedding)
+                )
+                user.taste_vector = updated_taste
 
     # Update User attributes
     user.current_skill_level = new_skill

@@ -73,12 +73,12 @@ async def test_submit_telemetry_api(async_client: AsyncClient):
     session_id = str(uuid.uuid4())
     level_id = str(uuid.uuid4())
 
-    # Submit Telemetry
+    # Submit Telemetry with a batch list of solved IMDb IDs
     telemetry_payload = {
         "user_id": user_id,
         "session_id": session_id,
         "level_id": level_id,
-        "imdb_id": "tt0111161",  # The Shawshank Redemption
+        "imdb_ids": ["tt0111161", "tt0068646"],  # Shawshank Redemption, The Godfather
         "time_taken_seconds": 35,
         "free_hints_used": 0,
         "cell_error_count": 0,
