@@ -1,12 +1,14 @@
 import uuid
+import hashlib
 import logging
+import asyncio
 from typing import List, Dict, Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.user import User
 from app.db.models.movie import Movie
-from app.db.models.telemetry import UserGameplayTelemetry
+from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
 from app.db.models.hint_cache import LevelHintCache
 from app.schemas.gameplay import LevelResponse
 from app.services.history_store import history_store
@@ -16,10 +18,36 @@ from app.engine.csp_solver import solveCrossword
 logger = logging.getLogger(__name__)
 
 
-def build_hint_stack(movie: Optional[Movie], skill_level: float) -> List[Dict[str, Any]]:
+def _pick_hint(raw: str, seed: str) -> str:
+    """
+    Selects one hint from a pipe-separated hint string deterministically.
+
+    The seed (level_id + imdb_id + tier) means:
+    - Same movie in the same level always shows the same single hint (stable mid-session).
+    - Same movie in a different level shows a different hint (freshness across replays).
+    - No randomness — fully reproducible from the same inputs.
+    """
+    hints = [h.strip() for h in raw.split("|") if h.strip()]
+    if not hints:
+        return raw.strip()  # not pipe-separated — return as-is
+    if len(hints) == 1:
+        return hints[0]
+    idx = int(hashlib.md5(seed.encode(), usedforsecurity=False).hexdigest(), 16) % len(hints)
+    return hints[idx]
+
+
+def build_hint_stack(
+    movie: Optional[Movie],
+    skill_level: float,
+    level_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
     Builds an ordered hint stack (T1 hardest -> T7 easiest) for a movie.
     Determines starting tier index based on player's skill_level.
+
+    Each multi-hint column (pipe-separated) is resolved to a single hint using
+    a deterministic hash of (level_id, imdb_id, tier) so hints vary per level
+    but are stable within a session.
     """
     if not movie:
         return [{
@@ -29,14 +57,22 @@ def build_hint_stack(movie: Optional[Movie], skill_level: float) -> List[Dict[st
             "cost": 0
         }]
 
+    # Build a stable seed base for this (level, movie) pair
+    seed_base = f"{level_id or 'default'}{movie.imdb_id}"
+
+    def pick(raw: Optional[str], tier: int) -> Optional[str]:
+        if not raw:
+            return None
+        return _pick_hint(raw, seed=f"{seed_base}{tier}")
+
     all_tiers = [
-        {"tier": 1, "type": "trivia", "text": movie.trivia_hints},
-        {"tier": 2, "type": "props", "text": movie.famous_props_macguffins},
-        {"tier": 3, "type": "cultural_impact", "text": movie.cultural_impact_legacy},
-        {"tier": 4, "type": "famous_scene", "text": movie.famous_scene_hints},
-        {"tier": 5, "type": "theme", "text": movie.theme_hints},
-        {"tier": 6, "type": "plot", "text": movie.plot_hints},
-        {"tier": 7, "type": "character", "text": movie.character_hints},
+        {"tier": 1, "type": "trivia",          "text": pick(movie.trivia_hints, 1)},
+        {"tier": 2, "type": "theme",           "text": pick(movie.theme_hints, 2)},
+        {"tier": 3, "type": "props",           "text": pick(movie.famous_props_macguffins, 3)},
+        {"tier": 4, "type": "cultural_impact", "text": pick(movie.cultural_impact_legacy, 4)},
+        {"tier": 5, "type": "famous_scene",    "text": pick(movie.famous_scene_hints, 5)},
+        {"tier": 6, "type": "plot",            "text": pick(movie.plot_hints, 6)},
+        {"tier": 7, "type": "character",       "text": pick(movie.character_hints, 7)},
     ]
 
     available = [h for h in all_tiers if h["text"]]
@@ -47,19 +83,27 @@ def build_hint_stack(movie: Optional[Movie], skill_level: float) -> List[Dict[st
             "text": f"Famous {movie.year} film directed by {movie.director or 'Unknown'}"
         }]
 
-    if skill_level >= 0.70:
-        start_min_tier = 1
-    elif skill_level >= 0.40:
-        start_min_tier = 3
-    else:
-        start_min_tier = 5
+    # Continuously map skill_level (0.05 to 0.95) across all 7 hint tiers (Tier 7 easiest -> Tier 1 hardest)
+    clamped_skill = max(0.05, min(0.95, skill_level))
+    raw_tier = 7.0 - ((clamped_skill - 0.05) / 0.90) * 6.0
+    target_tier = max(1, min(7, int(round(raw_tier))))
 
-    eligible = [h for h in available if h["tier"] >= start_min_tier]
-    if not eligible:
-        eligible = available[-1:]
+    # Select primary initial hint closest to target_tier
+    primary_hint = min(available, key=lambda h: abs(h["tier"] - target_tier))
+
+    # Remaining hints ordered logically for progressive requests
+    remaining_hints = [h for h in available if h != primary_hint]
+    if target_tier >= 4:
+        # For beginners/intermediates: progressively reveal remaining hints from easiest to hardest
+        remaining_hints.sort(key=lambda h: h["tier"], reverse=True)
+    else:
+        # For experts: progressively reveal remaining hints from hardest to easiest
+        remaining_hints.sort(key=lambda h: h["tier"])
+
+    ordered_hints = [primary_hint] + remaining_hints
 
     stack = []
-    for i, h in enumerate(eligible):
+    for i, h in enumerate(ordered_hints):
         stack.append({
             "tier": h["tier"],
             "type": h["type"],
@@ -70,8 +114,8 @@ def build_hint_stack(movie: Optional[Movie], skill_level: float) -> List[Dict[st
 
 
 async def generateLevelForUser(
-    db: AsyncSession, 
-    userId: uuid.UUID, 
+    db: AsyncSession,
+    userId: uuid.UUID,
     requestedDifficulty: Optional[float] = None
 ) -> LevelResponse:
     # 1. Fetch User Profile
@@ -83,9 +127,8 @@ async def generateLevelForUser(
     target_diff = requestedDifficulty if requestedDifficulty is not None else skill_level
 
     # 2. Fetch Played IMDb IDs for this User to prevent duplicates across levels
-    history_query = select(UserGameplayTelemetry.imdb_id).where(
-        UserGameplayTelemetry.user_id == userId,
-        UserGameplayTelemetry.imdb_id.is_not(None)
+    history_query = select(UserMovieTelemetry.imdb_id).where(
+        UserMovieTelemetry.user_id == userId
     )
     history_res = await db.execute(history_query)
     played_imdb_ids = set(history_res.scalars().all())
@@ -116,26 +159,33 @@ async def generateLevelForUser(
         }
         for m in final_candidates if m.clean_title
     ]
-    movie_map = {m.clean_title: m for m in final_candidates if m.clean_title}
+    # Key by imdb_id to avoid silent collisions when two movies share the same clean_title
+    movie_map = {m.imdb_id: m for m in final_candidates if m.imdb_id}
 
-    # 6. Solve crossword layout (OR-Tools primary, greedy fallback)
-    solution_placements = solveCrossword(candidate_dicts, targetCount=6, gridSize=10)
+    # 6. Solve crossword layout (OR-Tools primary, greedy fallback offloaded to thread pool)
+    solution_placements = await asyncio.to_thread(
+        solveCrossword,
+        candidate_dicts,
+        targetCount=6,
+        gridSize=10
+    )
 
-    # 7. Build Clues, Hint Cache entries, and Placed Words list
-    placed_words = []
+    # 7. Build Clues list and Hint Cache entries
     clues = []
     level_id = uuid.uuid4()
-    
+
     if solution_placements:
         grid = [["" for _ in range(10)] for _ in range(10)]
-        
+
         for slot in solution_placements:
             clean_word = slot["word"]
-            m = movie_map.get(clean_word)
-            hint_stack = build_hint_stack(m, skill_level)
+            # Lookup by imdb_id to avoid clean_title collision
+            imdb_id = slot.get("movie", {}).get("imdb_id")
+            m = movie_map.get(imdb_id)
+            hint_stack = build_hint_stack(m, skill_level, level_id=str(level_id))
             initial_hint = hint_stack[0]
-            
-            # Save hint stack in database
+
+            # Save hint stack in database (committed by the route layer, not here)
             hint_cache_row = LevelHintCache(
                 level_id=level_id,
                 slot_id=slot["slot_id"],
@@ -148,8 +198,8 @@ async def generateLevelForUser(
             r, c = slot["row"], slot["col"]
             direction = slot["direction"]
             for idx, ch in enumerate(clean_word):
-                gr = r if direction in ("H", "ACROSS") else r + idx
-                gc = c + idx if direction in ("H", "ACROSS") else c
+                gr = r if direction == "ACROSS" else r + idx
+                gc = c + idx if direction == "ACROSS" else c
                 if 0 <= gr < 10 and 0 <= gc < 10:
                     grid[gr][gc] = ch
 
@@ -158,22 +208,23 @@ async def generateLevelForUser(
             clue_obj = {
                 "slot_id": slot["slot_id"],
                 "direction": slot["direction"],
-                "start_row": slot["row"],
-                "start_col": slot["col"],
+                "row": slot["row"],
+                "col": slot["col"],
                 "length": slot["length"],
-                "initial_hint": initial_hint["text"],
-                "clue_text": initial_hint["text"],
-                "initial_hint_tier": initial_hint["tier"],
-                "initial_hint_type": initial_hint["type"],
-                "hints_available": len(hint_stack) - 1,
-                "post_solve_trivia": post_trivia,
+                "imdb_id": m.imdb_id if m else None,
                 "display_title": m.title if m else clean_word,
-                "imdb_id": m.imdb_id if m else None
+                "difficulty": round(m.base_difficulty, 3) if m else 0.5,
+                "hint": initial_hint["text"],
+                "hint_tier": initial_hint["tier"],
+                "hint_type": initial_hint["type"],
+                "hints_available": len(hint_stack) - 1,
+                "post_solve_trivia": post_trivia
             }
             clues.append(clue_obj)
-            placed_words.append(slot)
 
-        await db.commit()
+        # NOTE: db.commit() is intentionally NOT called here.
+        # The route layer (generateLevel in gameplay.py) commits AFTER
+        # history_store.save_generated_level() succeeds, keeping both writes atomic.
     else:
         grid = [["" for _ in range(10)] for _ in range(10)]
 
@@ -181,9 +232,5 @@ async def generateLevelForUser(
         level_id=level_id,
         target_difficulty=target_diff,
         grid=grid,
-        placed_words=placed_words,
         clues=clues
     )
-
-
-    

@@ -191,7 +191,7 @@
       const numMap = {};
       let numCounter = 1;
       currentLevel.clues.forEach(clue => {
-        const key = `${clue.start_row},${clue.start_col}`;
+        const key = `${clue.row},${clue.col}`;
         if (!numMap[key]) numMap[key] = numCounter++;
         clue.num = numMap[key];
       });
@@ -241,7 +241,7 @@
         const li = document.createElement("li");
         li.className = "clue-item";
         li.id = `clue-${clue.slot_id}`;
-        li.innerHTML = `<b>${clue.num}. [${clue.length}]</b> ${clue.clue_text}`;
+        li.innerHTML = `<b>${clue.num}. [${clue.length}]</b> ${clue.hint}`;
         li.onclick = () => highlightSlot(clue);
 
         if (clue.direction === "ACROSS") acrossEl.appendChild(li);
@@ -259,8 +259,8 @@
 
       // Highlight cells in word
       for (let i = 0; i < clue.length; i++) {
-        const r = clue.direction === "ACROSS" ? clue.start_row : clue.start_row + i;
-        const c = clue.direction === "ACROSS" ? clue.start_col + i : clue.start_col;
+        const r = clue.direction === "ACROSS" ? clue.row : clue.row + i;
+        const c = clue.direction === "ACROSS" ? clue.col + i : clue.col;
         const cell = document.querySelector(`.cell[data-row='${r}'][data-col='${c}']`);
         if (cell) cell.classList.add("highlight");
         if (i === 0 && cell) {

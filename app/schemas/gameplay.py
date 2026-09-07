@@ -1,25 +1,42 @@
 import uuid
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field, ConfigDict
+
 
 class GenerateLevelRequest(BaseModel):
     user_id: uuid.UUID
     requested_difficulty: Optional[float] = None
-    grid_size: int = 10
+    # grid_size is fixed at 10 and not wired through the solver — removed to avoid misleading API contract
+
+
+class ClueItem(BaseModel):
+    slot_id: str
+    direction: str
+    row: int
+    col: int
+    length: int
+    imdb_id: Optional[str] = None
+    display_title: str
+    difficulty: Optional[float] = None
+    hint: str
+    hint_tier: int
+    hint_type: str
+    hints_available: int
+    post_solve_trivia: str
+
 
 
 class LevelResponse(BaseModel):
     level_id: uuid.UUID
     target_difficulty: float
     grid: List[List[str]]
-    placed_words: List[Dict[str, Any]]
-    clues: List[Dict[str, Any]]
+    clues: List[ClueItem]
 
 
 class HintRequest(BaseModel):
     user_id: uuid.UUID
     level_id: uuid.UUID
-    slot_id: str
+    slot_id: str = Field(..., max_length=32, pattern=r'^S\d+$')
 
 
 class HintResponse(BaseModel):
@@ -42,9 +59,8 @@ class MovieHintUsage(BaseModel):
 
 class SubmitTelemetryRequest(BaseModel):
     user_id: uuid.UUID
-    session_id: uuid.UUID
+    session_id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4)
     level_id: uuid.UUID
-    imdb_ids: Optional[List[str]] = None
     time_taken_seconds: int = Field(..., ge=1)
     free_hints_used: int = Field(default=0, ge=0)
     premium_hints_used: int = Field(default=0, ge=0)
@@ -59,3 +75,19 @@ class TelemetryResponse(BaseModel):
     previous_skill_level: float
     new_skill_level: float
     skill_delta: float
+
+
+class LevelHistoryItem(BaseModel):
+    """Schema for a single level entry returned by GET /history/{user_id}."""
+    model_config = ConfigDict(extra="ignore")
+
+    level_id: str
+    user_id: str
+    status: str
+    target_difficulty: Optional[float] = None
+    movies: List[Dict[str, Any]]
+    puzzle_data: Dict[str, Any]
+    telemetry: Dict[str, Any]
+    time_taken_seconds: Optional[int] = None
+    created_at: str
+    completed_at: Optional[str] = None

@@ -1,11 +1,16 @@
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.db.session import init_db
 from app.api.v1.router import api_router
 from app.services.history_store import history_store
+
+APP_VERSION = "1.0.0"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Movie Crossword Game API",
     description="Adaptive, AI-powered movie crossword puzzle generator & telemetry service.",
-    version="1.0.0",
+    version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
@@ -28,13 +33,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from pathlib import Path
-from fastapi.responses import FileResponse
 
 # Mount API v1 Routes
 app.include_router(api_router, prefix="/api/v1")
@@ -46,7 +48,7 @@ async def root():
     return {
         "status": "online",
         "service": "Movie Crossword Game Backend",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "docs_url": "/docs",
         "test_ui": "/test"
     }
@@ -57,4 +59,3 @@ async def test_ui():
     """Serves the pure testing web client for crossword gameplay."""
     test_html = Path(__file__).parent / "static" / "test_game.html"
     return FileResponse(test_html)
-

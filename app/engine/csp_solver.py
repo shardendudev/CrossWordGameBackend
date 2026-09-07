@@ -77,11 +77,14 @@ def filterConnectableCandidates(candidateWords: List[Dict[str, Any]], maxCount: 
     return [item[1] for item in scores[:maxCount]]
 
 
+SOLVER_TIME_LIMIT_S: float = 2.0  # shared time budget for OR-Tools CP-SAT
+
+
 def solveWithORTools(
     candidateWords: List[Dict[str, Any]],
     targetCount: int = 6,
     gridSize: int = 10,
-    timeLimitSeconds: float = 1.5,
+    timeLimitSeconds: float = SOLVER_TIME_LIMIT_S,
     maxCandidates: int = 25
 ) -> Optional[List[Dict[str, Any]]]:
     """
@@ -255,7 +258,7 @@ def solveFreeform(
     """
     Greedy freeform crossword solver used as a fast-path solver (< 1ms).
     """
-    valid_candidates = [w for w in candidateWords if w.get("clean_title") and 3 <= len(w.get("clean_title")) <= 9]
+    valid_candidates = [w for w in candidateWords if w.get("clean_title") and 3 <= len(w.get("clean_title")) <= 10]
     if not valid_candidates:
         return None
 
@@ -359,7 +362,7 @@ def solveCrossword(
         candidateWords,
         targetCount=targetCount,
         gridSize=gridSize,
-        timeLimitSeconds=2.0,
+        timeLimitSeconds=SOLVER_TIME_LIMIT_S,
         maxCandidates=25
     )
     if result:
@@ -381,8 +384,8 @@ def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:
         r, c = w["row"], w["col"]
         direction = w["direction"]
         for i in range(len(word)):
-            cell = (r if direction in ("H", "ACROSS") else r + i, c + i if direction in ("H", "ACROSS") else c)
-            grid.setdefault(cell, set()).add("ACROSS" if direction in ("H", "ACROSS") else "DOWN")
+            cell = (r if direction == "ACROSS" else r + i, c + i if direction == "ACROSS" else c)
+            grid.setdefault(cell, set()).add("ACROSS" if direction == "ACROSS" else "DOWN")
 
     intersections = sum(1 for dirs in grid.values() if len(dirs) > 1)
 
@@ -390,7 +393,7 @@ def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:
     for w in placed:
         wordLen = len(w["word"])
         r, c = w["row"], w["col"]
-        if w["direction"] in ("H", "ACROSS"):
+        if w["direction"] == "ACROSS":
             rows.append(r)
             cols.extend([c, c + wordLen - 1])
         else:

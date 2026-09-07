@@ -1,20 +1,8 @@
 import uuid
 import pytest
-import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from app.main import app
-from app.db.session import engine, init_db
+from httpx import AsyncClient
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
-
-
-@pytest_asyncio.fixture(scope="module")
-async def async_client():
-    await init_db()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        yield client
-    await engine.dispose()
 
 
 async def test_health_check(async_client: AsyncClient):
@@ -61,7 +49,6 @@ async def test_generate_level_api(async_client: AsyncClient):
     
     assert "level_id" in level_data
     assert "grid" in level_data
-    assert len(level_data["placed_words"]) == 6
     assert len(level_data["clues"]) == 6
 
 
@@ -127,7 +114,6 @@ async def test_get_user_history_api(async_client: AsyncClient):
         "user_id": user_id,
         "session_id": str(uuid.uuid4()),
         "level_id": level_id,
-        "imdb_ids": [m["imdb_id"] for m in hist_data[0]["movies"] if m.get("imdb_id")],
         "time_taken_seconds": 48,
         "free_hints_used": 1,
         "cell_error_count": 0,

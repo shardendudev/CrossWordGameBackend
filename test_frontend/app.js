@@ -155,7 +155,7 @@ function renderLevelWorkspace() {
   // Build grid cell number mapping
   const numMap = {};
   clues.forEach((c, idx) => {
-    const key = `${c.start_row},${c.start_col}`;
+    const key = `${c.row},${c.col}`;
     if (!numMap[key]) numMap[key] = idx + 1;
     c.number = numMap[key];
   });
@@ -203,7 +203,7 @@ function renderLevelWorkspace() {
     const li = document.createElement('li');
     li.className = 'clue-item';
     li.id = `clue-${clue.slot_id}`;
-    li.innerHTML = `<span class="clue-num">${clue.number}.</span> <span class="clue-title">${clue.display_title || ''}</span>: ${clue.clue_text}`;
+    li.innerHTML = `<span class="clue-num">${clue.number}.</span> <span class="clue-title">${clue.display_title || ''}</span>: ${clue.hint}`;
 
     li.addEventListener('click', () => selectClue(clue));
 
@@ -251,16 +251,16 @@ function selectClue(clue) {
   if (item) item.classList.add('active-clue');
 
   // Highlight word cells on grid
-  const { start_row, start_col, length, direction } = clue;
+  const { row, col, length, direction } = clue;
   for (let i = 0; i < length; i++) {
-    const r = (direction === 'ACROSS' || direction === 'H') ? start_row : start_row + i;
-    const c = (direction === 'ACROSS' || direction === 'H') ? start_col + i : start_col;
+    const r = (direction === 'ACROSS' || direction === 'H') ? row : row + i;
+    const c = (direction === 'ACROSS' || direction === 'H') ? col + i : col;
     const cell = document.querySelector(`.grid-cell[data-row="${r}"][data-col="${c}"]`);
     if (cell) cell.classList.add('highlight-word');
   }
 
   // Focus first cell
-  const firstInput = document.querySelector(`input[data-row="${start_row}"][data-col="${start_col}"]`);
+  const firstInput = document.querySelector(`input[data-row="${row}"][data-col="${col}"]`);
   if (firstInput) firstInput.focus();
 }
 

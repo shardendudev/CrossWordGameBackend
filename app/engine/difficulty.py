@@ -18,7 +18,7 @@ def calculateBaseDifficulty(imdbVotes: int, minVotes: int = 500, maxVotes: int =
 
 def calculatePerformanceRatio(
     timeTakenSeconds: float,
-    expectedTimeSeconds: float = 60.0,
+    expectedTimeSeconds: float = 360.0,
     freeHints: int = 0,
     premiumHints: int = 0,
     errors: int = 0,
@@ -29,8 +29,11 @@ def calculatePerformanceRatio(
     - P_level > 1.0: Player solved quickly with few hints.
     - P_level < 1.0: Player took long or used many hints.
     """
-    tActual = max(timeTakenSeconds, 5.0)
-    timeFactor = expectedTimeSeconds / tActual
+    tActual = max(timeTakenSeconds, 10.0)
+    # Clamp timeFactor between 0.2x and 2.5x to prevent extreme spikes while staying responsive
+    rawTimeFactor = expectedTimeSeconds / tActual
+    timeFactor = min(2.5, max(0.2, rawTimeFactor))
+
     penaltyFactor = 1.0 / (1.0 + (0.25 * freeHints) + (1.20 * premiumHints) + (0.15 * errors))
     depthPenalty = 1.0 - (0.3 * min(1.0, max(0.0, avgHintDepth)))
     
@@ -40,11 +43,12 @@ def calculatePerformanceRatio(
 def updateUserSkill(
     currentSkill: float,
     pLevel: float,
-    alpha: float = 0.2,
-    gamma: float = 0.1
+    alpha: float = 0.3,
+    gamma: float = 0.25
 ) -> float:
     """
     Updates player skill rating S_user using Exponential Moving Average (EMA).
+    - Addresses Code Review 3.2: Increased gamma (0.25) & alpha (0.3) for responsive skill progression.
     - Bounded between 0.05 (Beginner) and 0.95 (Expert).
     """
     delta = gamma * (pLevel - 1.0)
@@ -56,22 +60,27 @@ def updateUserSkill(
 def updateTasteVector(
     currentVector: list[float] | None,
     solvedMovieVector: list[float] | None,
-    beta: float = 0.85
+    beta: float = 0.60
 ) -> list[float] | None:
     """
     Updates player movie taste vector u using weighted running average.
+    - Addresses Code Review 3.7: Reduced beta from 0.85 to 0.70 so taste adapts quickly to recent games.
     """
     if solvedMovieVector is None:
         return currentVector
     
     vSolved = np.array(solvedMovieVector, dtype=np.float32)
+    normSolved = np.linalg.norm(vSolved)
+    if normSolved > 0:
+        vSolved = vSolved / normSolved  # Pre-normalize solved vector
+    
     if currentVector is None:
-        norm = np.linalg.norm(vSolved)
-        return (vSolved / norm).tolist() if norm > 0 else vSolved.tolist()
+        return vSolved.tolist()
     
     uCurr = np.array(currentVector, dtype=np.float32)
     updated = beta * uCurr + (1.0 - beta) * vSolved
-    norm = np.linalg.norm(updated)
-    if norm > 0:
-        updated = updated / norm
+    normUpdated = np.linalg.norm(updated)
+    if normUpdated > 0:
+        updated = updated / normUpdated
     return updated.tolist()
+

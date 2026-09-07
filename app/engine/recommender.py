@@ -15,7 +15,7 @@ async def fetchCandidateMovies(db:AsyncSession, targetDifficulty:float, limit: i
 
     return list(result.scalars().all())
 
-async def recommendMoviesByTaste(db:AsyncSession, tasteVector:List[float], targetDifficulty:float, limit:int=20, margin:float=0.20) -> List[Movie]:
+async def recommendMoviesByTaste(db: AsyncSession, tasteVector: List[float], targetDifficulty: float, limit: int = 100, margin: float = 0.20) -> List[Movie]:
     min_diff = max(0.0, targetDifficulty - margin)
     max_diff = min(1.0, targetDifficulty + margin)
 
