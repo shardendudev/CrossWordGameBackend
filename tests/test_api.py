@@ -70,15 +70,19 @@ async def test_submit_telemetry_api(async_client: AsyncClient):
     create_res = await async_client.post("/api/v1/users/", json={"username": unique_username})
     user_id = create_res.json()["user_id"]
 
+    # 1. Generate level first
+    level_res = await async_client.post("/api/v1/gameplay/generate-level", json={
+        "user_id": user_id,
+        "requested_difficulty": 0.30
+    })
+    level_id = level_res.json()["level_id"]
     session_id = str(uuid.uuid4())
-    level_id = str(uuid.uuid4())
 
-    # Submit Telemetry with a batch list of solved IMDb IDs
+    # 2. Submit Telemetry without passing imdb_ids (backend auto-fetches from level!)
     telemetry_payload = {
         "user_id": user_id,
         "session_id": session_id,
         "level_id": level_id,
-        "imdb_ids": ["tt0111161", "tt0068646"],  # Shawshank Redemption, The Godfather
         "time_taken_seconds": 35,
         "free_hints_used": 0,
         "cell_error_count": 0,
@@ -94,3 +98,87 @@ async def test_submit_telemetry_api(async_client: AsyncClient):
     assert res_data["previous_skill_level"] == 0.200
     assert "new_skill_level" in res_data
     assert "skill_delta" in res_data
+
+
+async def test_get_user_history_api(async_client: AsyncClient):
+    unique_username = f"history_user_{uuid.uuid4().hex[:8]}"
+    create_res = await async_client.post("/api/v1/users/", json={"username": unique_username})
+    user_id = create_res.json()["user_id"]
+
+    # 1. Generate a Level (which persists into history_store)
+    level_res = await async_client.post("/api/v1/gameplay/generate-level", json={
+        "user_id": user_id,
+        "requested_difficulty": 0.35
+    })
+    assert level_res.status_code == 200
+    level_id = level_res.json()["level_id"]
+
+    # 2. Verify level appears in user history as in_progress
+    hist_res = await async_client.get(f"/api/v1/gameplay/history/{user_id}")
+    assert hist_res.status_code == 200
+    hist_data = hist_res.json()
+    assert len(hist_data) >= 1
+    assert hist_data[0]["level_id"] == level_id
+    assert hist_data[0]["status"] == "in_progress"
+    assert len(hist_data[0]["movies"]) == 6
+
+    # 3. Submit Telemetry
+    telemetry_payload = {
+        "user_id": user_id,
+        "session_id": str(uuid.uuid4()),
+        "level_id": level_id,
+        "imdb_ids": [m["imdb_id"] for m in hist_data[0]["movies"] if m.get("imdb_id")],
+        "time_taken_seconds": 48,
+        "free_hints_used": 1,
+        "cell_error_count": 0,
+        "is_completed": True
+    }
+    sub_res = await async_client.post("/api/v1/gameplay/submit-telemetry", json=telemetry_payload)
+    assert sub_res.status_code == 200
+
+    # 4. Verify level status updated to completed in history
+    updated_hist = await async_client.get(f"/api/v1/gameplay/history/{user_id}")
+    assert updated_hist.status_code == 200
+    data = updated_hist.json()
+    assert data[0]["status"] == "completed"
+    assert data[0]["time_taken_seconds"] == 48
+
+    # 5. Verify non-existent user returns 404
+    fake_id = str(uuid.uuid4())
+    missing_res = await async_client.get(f"/api/v1/gameplay/history/{fake_id}")
+    assert missing_res.status_code == 404
+
+
+async def test_request_hint_api(async_client: AsyncClient):
+    unique_username = f"hint_user_{uuid.uuid4().hex[:8]}"
+    create_res = await async_client.post("/api/v1/users/", json={"username": unique_username})
+    user_id = create_res.json()["user_id"]
+
+    # 1. Generate level
+    level_res = await async_client.post("/api/v1/gameplay/generate-level", json={
+        "user_id": user_id,
+        "requested_difficulty": 0.35
+    })
+    assert level_res.status_code == 200
+    level_data = level_res.json()
+    level_id = level_data["level_id"]
+    slot_id = level_data["clues"][0]["slot_id"]
+
+    # 2. Request progressive hint for slot
+    hint_res = await async_client.post("/api/v1/gameplay/request-hint", json={
+        "user_id": user_id,
+        "level_id": level_id,
+        "slot_id": slot_id
+    })
+    if hint_res.status_code == 200:
+        hdata = hint_res.json()
+        assert "hint_text" in hdata
+        assert "tier" in hdata
+        assert hdata["slot_id"] == slot_id
+    else:
+        assert hint_res.status_code == 400
+
+
+
+
+

@@ -5,12 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.session import init_db
 from app.api.v1.router import api_router
-
+from app.services.history_store import history_store
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initializes database extensions and tables on application startup."""
     await init_db()
+    await history_store.init_db()
     yield
 
 
@@ -32,6 +33,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from pathlib import Path
+from fastapi.responses import FileResponse
+
 # Mount API v1 Routes
 app.include_router(api_router, prefix="/api/v1")
 
@@ -43,5 +47,14 @@ async def root():
         "status": "online",
         "service": "Movie Crossword Game Backend",
         "version": "1.0.0",
-        "docs_url": "/docs"
+        "docs_url": "/docs",
+        "test_ui": "/test"
     }
+
+
+@app.get("/test", tags=["Test UI"])
+async def test_ui():
+    """Serves the pure testing web client for crossword gameplay."""
+    test_html = Path(__file__).parent / "static" / "test_game.html"
+    return FileResponse(test_html)
+

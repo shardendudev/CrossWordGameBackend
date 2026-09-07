@@ -7,22 +7,66 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.user import User
 from app.db.models.movie import Movie
 from app.db.models.telemetry import UserGameplayTelemetry
+from app.db.models.hint_cache import LevelHintCache
 from app.schemas.gameplay import LevelResponse
+from app.services.history_store import history_store
 from app.engine.recommender import recommendMoviesByTaste, fetchCandidateMovies
-from app.engine.csp_solver import CrosswordCSPSolver, solveFreeform
-from app.core.topologies import EASY_TOPOLOGIES, MEDIUM_TOPOLOGIES, HARD_TOPOLOGIES, transformTopology
+from app.engine.csp_solver import solveCrossword
 
 logger = logging.getLogger(__name__)
 
 
-def selectClueForSkill(movie: Movie, skillLevel: float) -> str:
-    """Selects an adaptive clue hint based on the player's skill rating."""
-    if skillLevel < 0.40:
-        return movie.plot_hints or movie.character_hints or f"Famous {movie.year} film directed by {movie.director or 'Unknown'}"
-    elif skillLevel < 0.70:
-        return movie.famous_scene_hints or movie.theme_hints or movie.plot_hints or f"Starring {movie.actors or 'renowned cast'}"
+def build_hint_stack(movie: Optional[Movie], skill_level: float) -> List[Dict[str, Any]]:
+    """
+    Builds an ordered hint stack (T1 hardest -> T7 easiest) for a movie.
+    Determines starting tier index based on player's skill_level.
+    """
+    if not movie:
+        return [{
+            "tier": 7,
+            "type": "title_clue",
+            "text": "Movie title clue",
+            "cost": 0
+        }]
+
+    all_tiers = [
+        {"tier": 1, "type": "trivia", "text": movie.trivia_hints},
+        {"tier": 2, "type": "props", "text": movie.famous_props_macguffins},
+        {"tier": 3, "type": "cultural_impact", "text": movie.cultural_impact_legacy},
+        {"tier": 4, "type": "famous_scene", "text": movie.famous_scene_hints},
+        {"tier": 5, "type": "theme", "text": movie.theme_hints},
+        {"tier": 6, "type": "plot", "text": movie.plot_hints},
+        {"tier": 7, "type": "character", "text": movie.character_hints},
+    ]
+
+    available = [h for h in all_tiers if h["text"]]
+    if not available:
+        available = [{
+            "tier": 7,
+            "type": "fallback",
+            "text": f"Famous {movie.year} film directed by {movie.director or 'Unknown'}"
+        }]
+
+    if skill_level >= 0.70:
+        start_min_tier = 1
+    elif skill_level >= 0.40:
+        start_min_tier = 3
     else:
-        return movie.trivia_hints or movie.famous_props_macguffins or movie.cultural_impact_legacy or movie.famous_scene_hints or f"Iconic cinema release from {movie.year}"
+        start_min_tier = 5
+
+    eligible = [h for h in available if h["tier"] >= start_min_tier]
+    if not eligible:
+        eligible = available[-1:]
+
+    stack = []
+    for i, h in enumerate(eligible):
+        stack.append({
+            "tier": h["tier"],
+            "type": h["type"],
+            "text": h["text"],
+            "cost": 0 if i == 0 else (0 if i <= 2 else 1)
+        })
+    return stack
 
 
 async def generateLevelForUser(
@@ -46,6 +90,10 @@ async def generateLevelForUser(
     history_res = await db.execute(history_query)
     played_imdb_ids = set(history_res.scalars().all())
 
+    # Union with history_store for instant deduplication across in-progress and completed levels
+    store_played_ids = await history_store.get_played_movie_ids(str(userId))
+    played_imdb_ids = played_imdb_ids.union(store_played_ids)
+
     # 3. Fetch Candidate Movies
     if taste_vector is not None:
         candidates = await recommendMoviesByTaste(db, tasteVector=taste_vector, targetDifficulty=target_diff, limit=300, margin=0.35)
@@ -59,7 +107,7 @@ async def generateLevelForUser(
     unplayed_candidates = [m for m in candidates if m.imdb_id not in played_imdb_ids]
     final_candidates = unplayed_candidates if len(unplayed_candidates) >= 10 else candidates
 
-    # 5. Format Candidate Dictionaries for Freeform & OR-Tools Solver
+    # 5. Format Candidate Dictionaries for Freeform Solver
     candidate_dicts = [
         {
             "imdb_id": m.imdb_id,
@@ -70,31 +118,13 @@ async def generateLevelForUser(
     ]
     movie_map = {m.clean_title: m for m in final_candidates if m.clean_title}
 
-    # 6. Attempt Dynamic Freeform Placement with End-Cap Buffers (< 15ms)
-    solution_placements = solveFreeform(candidate_dicts, targetCount=6, gridSize=10)
+    # 6. Solve crossword layout (OR-Tools primary, greedy fallback)
+    solution_placements = solveCrossword(candidate_dicts, targetCount=6, gridSize=10)
 
-    # 7. Fallback to Topology Solver if Freeform placement is needed
-    if not solution_placements or len(solution_placements) < 6:
-        if target_diff <= 0.40:
-            topologies_pool = EASY_TOPOLOGIES
-        elif target_diff < 0.70:
-            topologies_pool = MEDIUM_TOPOLOGIES
-        else:
-            topologies_pool = HARD_TOPOLOGIES
-
-        expanded_slots_list = []
-        for topo in topologies_pool:
-            expanded_slots_list.append(topo["slots"])
-            expanded_slots_list.append(transformTopology(topo, rotation=90)["slots"])
-            expanded_slots_list.append(transformTopology(topo, flip_h=True)["slots"])
-            expanded_slots_list.append(transformTopology(topo, flip_v=True)["slots"])
-
-        solver = CrosswordCSPSolver(gridSize=10)
-        solution_placements = solver.solveWithTopologies(expanded_slots_list, candidate_dicts, maxAttempts=10)
-
-    # 8. Build Clues and Placed Words list
+    # 7. Build Clues, Hint Cache entries, and Placed Words list
     placed_words = []
     clues = []
+    level_id = uuid.uuid4()
     
     if solution_placements:
         grid = [["" for _ in range(10)] for _ in range(10)]
@@ -102,8 +132,19 @@ async def generateLevelForUser(
         for slot in solution_placements:
             clean_word = slot["word"]
             m = movie_map.get(clean_word)
-            clue_text = selectClueForSkill(m, skill_level) if m else "Movie title clue"
+            hint_stack = build_hint_stack(m, skill_level)
+            initial_hint = hint_stack[0]
             
+            # Save hint stack in database
+            hint_cache_row = LevelHintCache(
+                level_id=level_id,
+                slot_id=slot["slot_id"],
+                imdb_id=m.imdb_id if m else None,
+                hint_stack=hint_stack,
+                revealed_up_to=1
+            )
+            db.add(hint_cache_row)
+
             r, c = slot["row"], slot["col"]
             direction = slot["direction"]
             for idx, ch in enumerate(clean_word):
@@ -112,30 +153,37 @@ async def generateLevelForUser(
                 if 0 <= gr < 10 and 0 <= gc < 10:
                     grid[gr][gc] = ch
 
+            post_trivia = (m.awards_summary or m.iconic_dialogue or "Iconic cinema classic!") if m else ""
+
             clue_obj = {
                 "slot_id": slot["slot_id"],
                 "direction": slot["direction"],
                 "start_row": slot["row"],
                 "start_col": slot["col"],
                 "length": slot["length"],
-                "clue_text": clue_text,
+                "initial_hint": initial_hint["text"],
+                "clue_text": initial_hint["text"],
+                "initial_hint_tier": initial_hint["tier"],
+                "initial_hint_type": initial_hint["type"],
+                "hints_available": len(hint_stack) - 1,
+                "post_solve_trivia": post_trivia,
                 "display_title": m.title if m else clean_word,
                 "imdb_id": m.imdb_id if m else None
             }
             clues.append(clue_obj)
             placed_words.append(slot)
 
-        topology_id = "freeform_dynamic_grid"
+        await db.commit()
     else:
         grid = [["" for _ in range(10)] for _ in range(10)]
-        topology_id = "fallback_empty"
 
-    level_id = uuid.uuid4()
     return LevelResponse(
         level_id=level_id,
-        topology_id=topology_id,
         target_difficulty=target_diff,
         grid=grid,
         placed_words=placed_words,
         clues=clues
     )
+
+
+    

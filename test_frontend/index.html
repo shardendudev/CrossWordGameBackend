@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Movie Crossword Game — Mock Test Frontend</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-icon">🎬</span>
+        <div>
+          <h1>Movie Crossword</h1>
+          <p class="subtitle">AI-Powered Adaptive Crossword Game (Backend Test Harness)</p>
+        </div>
+      </div>
+      <div id="backendStatus" class="backend-badge offline">
+        <span class="status-dot"></span> Backend: Connecting...
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Left Panel: User Profile & Level Controls -->
+      <aside class="side-panel">
+        <!-- User Profile Card -->
+        <div class="card profile-card">
+          <h2 class="card-title">👤 Player Profile</h2>
+          
+          <div id="userRegisterSection" class="form-group">
+            <label for="usernameInput">Username</label>
+            <div class="input-group">
+              <input type="text" id="usernameInput" placeholder="Enter username (e.g. Cinephile)" value="Cinephile_Player" />
+              <button id="btnCreateUser" class="btn btn-primary">Register / Load</button>
+            </div>
+          </div>
+
+          <div id="userInfoSection" class="user-stats hidden">
+            <div class="stat-row">
+              <span class="stat-label">User ID</span>
+              <span id="statUserId" class="stat-val mono-text">...</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Username</span>
+              <span id="statUsername" class="stat-val highlight">...</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Skill Rating</span>
+              <div class="skill-container">
+                <span id="statSkill" class="stat-val badge-skill">0.200</span>
+                <div class="skill-bar-bg"><div id="skillBarFill" class="skill-bar-fill" style="width: 20%"></div></div>
+              </div>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Games Played</span>
+              <span id="statGamesPlayed" class="stat-val">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Level Generation Card -->
+        <div class="card level-card">
+          <h2 class="card-title">🎲 Level Generator</h2>
+          
+          <div class="form-group">
+            <label for="difficultySelect">Target Difficulty</label>
+            <select id="difficultySelect" class="select-input">
+              <option value="auto">Auto (Match User Skill)</option>
+              <option value="0.20">Easy (0.20)</option>
+              <option value="0.50">Medium (0.50)</option>
+              <option value="0.80">Hard (0.80)</option>
+            </select>
+          </div>
+
+          <button id="btnGenerateLevel" class="btn btn-accent btn-large" disabled>
+            ⚡ Generate Level
+          </button>
+        </div>
+
+        <!-- Gameplay Actions Card -->
+        <div id="gameplayControlsCard" class="card controls-card hidden">
+          <h2 class="card-title">⏱️ Session Controls</h2>
+          
+          <div class="timer-display">
+            <span class="timer-label">Time Elapsed</span>
+            <span id="timerText" class="timer-val">00:00</span>
+          </div>
+
+          <div class="button-grid">
+            <button id="btnRevealHint" class="btn btn-secondary">💡 Free Hint</button>
+            <button id="btnCheckGrid" class="btn btn-secondary">🔍 Check Grid</button>
+          </div>
+
+          <button id="btnSubmitLevel" class="btn btn-success btn-large margin-top">
+            🏆 Submit Level & Telemetry
+          </button>
+        </div>
+      </aside>
+
+      <!-- Right Panel: Interactive Crossword Grid & Clues -->
+      <section class="game-area">
+        <!-- Empty State Placeholder -->
+        <div id="emptyState" class="empty-state">
+          <div class="empty-icon">🧩</div>
+          <h3>No Level Active</h3>
+          <p>Register a player profile and click <strong>Generate Level</strong> to fetch a personalized 10x10 movie crossword from the FastAPI backend.</p>
+        </div>
+
+        <!-- Active Game Workspace -->
+        <div id="gameWorkspace" class="game-workspace hidden">
+          <!-- Grid Area -->
+          <div class="grid-container">
+            <div id="crosswordGrid" class="crossword-grid"></div>
+          </div>
+
+          <!-- Clues List Area -->
+          <div class="clues-container">
+            <h2 class="clues-header">💡 Adaptive Clues</h2>
+            
+            <div class="clues-split">
+              <!-- Across Clues -->
+              <div class="clues-column">
+                <h3 class="clue-section-title">➡️ ACROSS</h3>
+                <ul id="acrossCluesList" class="clues-list"></ul>
+              </div>
+
+              <!-- Down Clues -->
+              <div class="clues-column">
+                <h3 class="clue-section-title">⬇️ DOWN</h3>
+                <ul id="downCluesList" class="clues-list"></ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Telemetry Modal -->
+    <div id="telemetryModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>🎉 Level Completed!</h2>
+          <button id="btnCloseModal" class="btn-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Telemetry metrics submitted to <code>/api/v1/gameplay/submit-telemetry</code>:</p>
+          <div class="telemetry-grid">
+            <div class="telemetry-box">
+              <span class="t-label">Time Taken</span>
+              <span id="telTime" class="t-val">0s</span>
+            </div>
+            <div class="telemetry-box">
+              <span class="t-label">Free Hints</span>
+              <span id="telHints" class="t-val">0</span>
+            </div>
+            <div class="telemetry-box">
+              <span class="t-label">Cell Errors</span>
+              <span id="telErrors" class="t-val">0</span>
+            </div>
+            <div class="telemetry-box highlight-box">
+              <span class="t-label">Skill Rating Delta</span>
+              <span id="telDelta" class="t-val">+0.000</span>
+            </div>
+          </div>
+          <div class="skill-update-banner">
+            <span>Skill Level: <strong id="telOldSkill">0.200</strong> ➔ <strong id="telNewSkill">0.235</strong></span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btnModalNextLevel" class="btn btn-primary">Play Next Level 🚀</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

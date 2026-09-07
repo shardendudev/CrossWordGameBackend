@@ -21,7 +21,8 @@ def calculatePerformanceRatio(
     expectedTimeSeconds: float = 60.0,
     freeHints: int = 0,
     premiumHints: int = 0,
-    errors: int = 0
+    errors: int = 0,
+    avgHintDepth: float = 0.0
 ) -> float:
     """
     Evaluates player solve performance P_level.
@@ -31,8 +32,9 @@ def calculatePerformanceRatio(
     tActual = max(timeTakenSeconds, 5.0)
     timeFactor = expectedTimeSeconds / tActual
     penaltyFactor = 1.0 / (1.0 + (0.25 * freeHints) + (1.20 * premiumHints) + (0.15 * errors))
+    depthPenalty = 1.0 - (0.3 * min(1.0, max(0.0, avgHintDepth)))
     
-    return float(timeFactor * penaltyFactor)
+    return float(timeFactor * penaltyFactor * depthPenalty)
 
 
 def updateUserSkill(

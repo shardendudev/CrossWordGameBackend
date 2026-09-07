@@ -1,7 +1,11 @@
 import random
+import logging
 from typing import List, Dict, Tuple, Optional, Set, Any
 from ortools.sat.python import cp_model
 
+logger = logging.getLogger(__name__)
+
+# 1. Spatial Placement Rule Validator (used by greedy solver & bounds checker)
 
 def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, direction: str, size: int = 10) -> bool:
     """
@@ -15,7 +19,6 @@ def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, d
     if direction == "ACROSS":
         if c < 0 or c + length > size or r < 0 or r >= size:
             return False
-        # End-Cap Buffer (before start & after end)
         if c - 1 >= 0 and grid[r][c - 1] != "":
             return False
         if c + length < size and grid[r][c + length] != "":
@@ -23,7 +26,6 @@ def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, d
     else:  # DOWN
         if r < 0 or r + length > size or c < 0 or c >= size:
             return False
-        # End-Cap Buffer (above start & below end)
         if r - 1 >= 0 and grid[r - 1][c] != "":
             return False
         if r + length < size and grid[r + length][c] != "":
@@ -36,16 +38,15 @@ def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, d
         existing = grid[curr_r][curr_c]
         
         if existing != "" and existing != ch:
-            return False  # Letter mismatch at intersection
+            return False  # Letter mismatch
             
         if existing == "":
-            # Side Adjacency Buffer
             if direction == "ACROSS":
                 if curr_r - 1 >= 0 and grid[curr_r - 1][curr_c] != "":
                     return False
                 if curr_r + 1 < size and grid[curr_r + 1][curr_c] != "":
                     return False
-            else:  # DOWN
+            else:
                 if curr_c - 1 >= 0 and grid[curr_r][curr_c - 1] != "":
                     return False
                 if curr_c + 1 < size and grid[curr_r][curr_c + 1] != "":
@@ -53,16 +54,206 @@ def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, d
 
     return True
 
+# 2. PRODUCTION OR-TOOLS CP-SAT SOLVER (Linearized & Thread-Capped)
 
-def solveFreeform(
-    candidateWords: List[Dict[str, Any]], 
-    targetCount: int = 6, 
+def filterConnectableCandidates(candidateWords: List[Dict[str, Any]], maxCount: int = 25) -> List[Dict[str, Any]]:
+    """
+    Pre-filters candidate movies by removing titles that share fewer than 2 distinct characters
+    with the rest of the candidate pool, preventing wasted placement variables.
+    """
+    valid = [w for w in candidateWords if w.get("clean_title") and 3 <= len(w["clean_title"]) <= 10]
+    if len(valid) <= maxCount:
+        return valid
+
+    # Calculate letter overlap counts
+    word_sets = [set(w["clean_title"]) for w in valid]
+    scores = []
+    for i, w_set in enumerate(word_sets):
+        overlap_score = sum(len(w_set.intersection(other_set)) for j, other_set in enumerate(word_sets) if i != j)
+        scores.append((overlap_score, valid[i]))
+
+    # Sort candidates by character overlap connectivity
+    scores.sort(key=lambda x: x[0], reverse=True)
+    return [item[1] for item in scores[:maxCount]]
+
+
+def solveWithORTools(
+    candidateWords: List[Dict[str, Any]],
+    targetCount: int = 6,
     gridSize: int = 10,
-    maxRetries: int = 20
+    timeLimitSeconds: float = 1.5,
+    maxCandidates: int = 25
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    Assembles a 100% dynamic freeform 2D crossword layout grid with 6 unique movies in < 15ms.
-    Guarantees strict end-cap buffers and zero accidental letter collisions.
+    Production-grade Google OR-Tools CP-SAT solver for 2D crossword placement.
+    Uses direct linear constraints (zero reified variable overhead) and capped worker threads.
+    """
+    candidates = filterConnectableCandidates(candidateWords, maxCount=maxCandidates)
+    if len(candidates) < targetCount:
+        return None
+
+    # 1. Enumerate valid placements
+    placements: List[Tuple] = []
+    for w_idx, cand in enumerate(candidates):
+        word = cand["clean_title"]
+        L = len(word)
+        for r in range(gridSize):
+            for c in range(gridSize - L + 1):
+                placements.append((len(placements), w_idx, word, cand, r, c, "ACROSS", L))
+        for r in range(gridSize - L + 1):
+            for c in range(gridSize):
+                placements.append((len(placements), w_idx, word, cand, r, c, "DOWN", L))
+
+    N = len(placements)
+    if N == 0:
+        return None
+
+    # 2. Build spatial letter map
+    # (r, c) -> list of (p_idx, char, direction)
+    cell_letters: Dict[Tuple[int, int], List[Tuple[int, str, str]]] = {}
+    for p_idx, _, word, _, row, col, d, L in placements:
+        for i, ch in enumerate(word):
+            r = row if d == "ACROSS" else row + i
+            c = col + i if d == "ACROSS" else col
+            cell_letters.setdefault((r, c), []).append((p_idx, ch, d))
+
+    # 3. Build CP-SAT Model
+    model = cp_model.CpModel()
+    x = [model.NewBoolVar(f"x_{i}") for i in range(N)]
+
+    # C1: Select exactly targetCount words
+    model.Add(sum(x) == targetCount)
+
+    # C2: At most 1 placement per candidate movie (no duplicates)
+    by_word: Dict[int, List[int]] = {}
+    for p in placements:
+        by_word.setdefault(p[1], []).append(p[0])
+    for indices in by_word.values():
+        model.Add(sum(x[i] for i in indices) <= 1)
+
+    # C3: Cell level direction & letter consistency constraints
+    intersection_pairs: List[Tuple[int, int]] = []
+
+    for cell, occupants in cell_letters.items():
+        across_ps = [p for p, _, d in occupants if d == "ACROSS"]
+        down_ps = [p for p, _, d in occupants if d == "DOWN"]
+
+        # Max 1 ACROSS and max 1 DOWN word per cell
+        if len(across_ps) > 1:
+            model.Add(sum(x[p] for p in across_ps) <= 1)
+        if len(down_ps) > 1:
+            model.Add(sum(x[p] for p in down_ps) <= 1)
+
+        # Direct pairwise constraints: Forbid letter mismatch at intersections
+        across_dict = {p: ch for p, ch, d in occupants if d == "ACROSS"}
+        down_dict = {p: ch for p, ch, d in occupants if d == "DOWN"}
+
+        for a_p, a_ch in across_dict.items():
+            for d_p, d_ch in down_dict.items():
+                if a_ch != d_ch:
+                    # Letter mismatch -> cannot both be active
+                    model.Add(x[a_p] + x[d_p] <= 1)
+                else:
+                    # Valid intersection pair!
+                    intersection_pairs.append((a_p, d_p))
+
+    # C4: End-Cap Empty Buffer Constraints (Direct Pairwise Linear Bounds)
+    for p_idx, _, _, _, row, col, d, L in placements:
+        # Determine end-cap cells
+        end_caps = []
+        if d == "ACROSS":
+            if col > 0: end_caps.append((row, col - 1))
+            if col + L < gridSize: end_caps.append((row, col + L))
+        else:
+            if row > 0: end_caps.append((row - 1, col))
+            if row + L < gridSize: end_caps.append((row + L, col))
+
+        for cap in end_caps:
+            if cap in cell_letters:
+                # Placements that occupy the end-cap cell cannot be active if p_idx is active
+                for other_p, _, _ in cell_letters[cap]:
+                    if other_p != p_idx:
+                        model.Add(x[p_idx] + x[other_p] <= 1)
+
+    # C5: Side-Adjacency Buffer Constraints
+    # Prevents parallel adjacent words from touching side-by-side unless connected by an intersection
+    for cell, occupants in cell_letters.items():
+        r, c = cell
+        across_ps = [p for p, _, d in occupants if d == "ACROSS"]
+        down_ps = [p for p, _, d in occupants if d == "DOWN"]
+
+        # Check vertical neighbours for ACROSS words
+        if across_ps:
+            for dr in (-1, 1):
+                adj_cell = (r + dr, c)
+                if adj_cell in cell_letters:
+                    adj_ps = [p for p, _, _ in cell_letters[adj_cell]]
+                    for a_p in across_ps:
+                        for adj_p in adj_ps:
+                            if adj_p != a_p and adj_p not in down_ps:
+                                model.Add(x[a_p] + x[adj_p] <= 1)
+
+        # Check horizontal neighbours for DOWN words
+        if down_ps:
+            for dc in (-1, 1):
+                adj_cell = (r, c + dc)
+                if adj_cell in cell_letters:
+                    adj_ps = [p for p, _, _ in cell_letters[adj_cell]]
+                    for d_p in down_ps:
+                        for adj_p in adj_ps:
+                            if adj_p != d_p and adj_p not in across_ps:
+                                model.Add(x[d_p] + x[adj_p] <= 1)
+
+    # C6: Objective Function — Maximize Intersections (Linear Product Constraints)
+    intersection_vars = []
+    for a_p, d_p in set(intersection_pairs):
+        ix = model.NewBoolVar(f"ix_{a_p}_{d_p}")
+        model.Add(ix <= x[a_p])
+        model.Add(ix <= x[d_p])
+        model.Add(ix >= x[a_p] + x[d_p] - 1)
+        intersection_vars.append(ix)
+
+    if intersection_vars:
+        model.Maximize(sum(intersection_vars))
+
+    # 4. Configure C++ Solver & Thread Capping
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = timeLimitSeconds
+    solver.parameters.num_search_workers = 2  # Production CPU thread guardrail
+
+    status = solver.Solve(model)
+
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        result = []
+        for i in range(N):
+            if solver.Value(x[i]):
+                p = placements[i]
+                result.append({
+                    "slot_id": f"S{len(result) + 1}",
+                    "word": p[2],
+                    "movie": p[3],
+                    "length": p[7],
+                    "row": p[4],
+                    "col": p[5],
+                    "direction": p[6]
+                })
+        if len(result) == targetCount:
+            logger.info(f"Production OR-Tools solved crossword: {len(result)} words, "
+                        f"{solver.ObjectiveValue():.0f} intersections")
+            return result
+
+    return None
+
+# 3. FAST-PATH SOLVER: Greedy Freeform (< 1ms)
+
+def solveFreeform(
+    candidateWords: List[Dict[str, Any]],
+    targetCount: int = 6,
+    gridSize: int = 10,
+    maxRetries: int = 30
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Greedy freeform crossword solver used as a fast-path solver (< 1ms).
     """
     valid_candidates = [w for w in candidateWords if w.get("clean_title") and 3 <= len(w.get("clean_title")) <= 9]
     if not valid_candidates:
@@ -74,9 +265,8 @@ def solveFreeform(
         
         grid = [["" for _ in range(gridSize)] for _ in range(gridSize)]
         placed = []
-        placed_titles = set()
+        placed_titles: Set[str] = set()
 
-        # Place seed word horizontally across grid center
         seed_movie = shuffled[0]
         seed_word = seed_movie["clean_title"]
         seed_len = len(seed_word)
@@ -86,7 +276,6 @@ def solveFreeform(
         if not isValidFreeformPlacement(grid, seed_word, seed_r, seed_c, "ACROSS", gridSize):
             continue
 
-        # Commit seed word
         for i, ch in enumerate(seed_word):
             grid[seed_r][seed_c + i] = ch
         placed.append({
@@ -100,7 +289,6 @@ def solveFreeform(
         })
         placed_titles.add(seed_word)
 
-        # Place remaining 5 words via dynamic intersection search
         for cand in shuffled[1:]:
             if len(placed) >= targetCount:
                 break
@@ -110,7 +298,6 @@ def solveFreeform(
                 continue
 
             placed_this_word = False
-            # Find matching character intersections on the board
             for p in list(placed):
                 if placed_this_word:
                     break
@@ -118,12 +305,9 @@ def solveFreeform(
                 p_r, p_c = p["row"], p["col"]
                 p_dir = p["direction"]
 
-                # Try intersecting with placed word p
                 for p_idx, p_ch in enumerate(p_word):
                     if placed_this_word:
                         break
-                    
-                    # Coordinates of character p_ch
                     cell_r = p_r if p_dir == "ACROSS" else p_r + p_idx
                     cell_c = p_c + p_idx if p_dir == "ACROSS" else p_c
                     new_dir = "DOWN" if p_dir == "ACROSS" else "ACROSS"
@@ -134,7 +318,6 @@ def solveFreeform(
                             new_c = cell_c - w_idx if new_dir == "ACROSS" else cell_c
 
                             if isValidFreeformPlacement(grid, clean_word, new_r, new_c, new_dir, gridSize):
-                                # Commit placement
                                 for idx, ch in enumerate(clean_word):
                                     gr = new_r if new_dir == "ACROSS" else new_r + idx
                                     gc = new_c + idx if new_dir == "ACROSS" else new_c
@@ -157,6 +340,34 @@ def solveFreeform(
             return placed
 
     return None
+
+# 4. PUBLIC ENTRY POINT (Production Hybrid Cascade)
+
+
+def solveCrossword(
+    candidateWords: List[Dict[str, Any]],
+    targetCount: int = 6,
+    gridSize: int = 10
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Production entry point for crossword level generation.
+    1. Primary: Exact Google OR-Tools CP-SAT solver for maximum intersections & layout optimality.
+    2. Fallback: Fast geometric freeform solver.
+    """
+    # 1. Primary: Google OR-Tools CP-SAT
+    result = solveWithORTools(
+        candidateWords,
+        targetCount=targetCount,
+        gridSize=gridSize,
+        timeLimitSeconds=2.0,
+        maxCandidates=25
+    )
+    if result:
+        return result
+
+    # 2. Resilient Fallback
+    logger.info("OR-Tools did not find a layout within time limit, executing freeform fallback.")
+    return solveFreeform(candidateWords, targetCount=targetCount, gridSize=gridSize, maxRetries=50)
 
 
 def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:
@@ -194,126 +405,3 @@ def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:
     ratio = min(width, height) / max(width, height)
 
     return (intersections * 25.0) + (ratio * 15.0) - (area * 0.15)
-
-
-class CrosswordCSPSolver:
-    """
-    Constraint Satisfaction Problem (CSP) Solver powered by Google OR-Tools & Dynamic Freeform Growth.
-    Assembles 2D interlocking crossword grid layouts in milliseconds (<15ms).
-    """
-    def __init__(self, gridSize: int = 10):
-        self.gridSize = gridSize
-
-    def solve(self, slots: List[Dict], candidateWords: List[Dict]) -> Optional[List[Dict]]:
-        """Solves 2D crossword grid placement for a single slot topology."""
-        model = cp_model.CpModel()
-
-        wordsByLen: Dict[int, List[Dict]] = {}
-        for w in candidateWords:
-            cleanW = w.get("clean_title", "").upper()
-            if cleanW:
-                wordsByLen.setdefault(len(cleanW), []).append({
-                    "imdb_id": w.get("imdb_id"),
-                    "title": w.get("title"),
-                    "clean_title": cleanW,
-                    "raw_obj": w
-                })
-
-        wordVars = {}
-        for i, slot in enumerate(slots):
-            length = slot["length"]
-            validWords = wordsByLen.get(length, [])
-            if not validWords:
-                return None
-            wordVars[i] = model.NewIntVar(0, len(validWords) - 1, f"slot_{i}")
-
-        for i, slotA in enumerate(slots):
-            for j, slotB in enumerate(slots):
-                if i >= j:
-                    continue
-
-                intersection = self._getIntersection(slotA, slotB)
-                if intersection:
-                    posA, posB = intersection
-                    validA = wordsByLen[slotA["length"]]
-                    validB = wordsByLen[slotB["length"]]
-
-                    matchingTuples = [
-                        (idxA, idxB)
-                        for idxA, wa in enumerate(validA)
-                        for idxB, wb in enumerate(validB)
-                        if wa["clean_title"][posA] == wb["clean_title"][posB]
-                        and wa["clean_title"] != wb["clean_title"]
-                    ]
-
-                    if not matchingTuples:
-                        return None
-
-                    model.AddAllowedAssignments([wordVars[i], wordVars[j]], matchingTuples)
-
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 2.0
-        status = solver.Solve(model)
-
-        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            placements = []
-            for i, slot in enumerate(slots):
-                chosenIdx = solver.Value(wordVars[i])
-                chosenMovie = wordsByLen[slot["length"]][chosenIdx]
-                placements.append({
-                    "slot_id": slot.get("slot_id", slot.get("id", f"S_{i}")),
-                    "word": chosenMovie["clean_title"],
-                    "movie": chosenMovie["raw_obj"],
-                    "length": slot["length"],
-                    "row": slot.get("start_row", slot.get("row", 0)),
-                    "col": slot.get("start_col", slot.get("col", 0)),
-                    "direction": "ACROSS" if slot["direction"] in ("H", "ACROSS") else "DOWN"
-                })
-            return placements
-
-        return None
-
-    def solveWithTopologies(
-        self,
-        topologiesList: List[List[Dict[str, Any]]],
-        candidateWords: List[Dict[str, Any]],
-        maxAttempts: int = 5
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Evaluates multiple candidate topologies, returning the layout with highest visual score."""
-        bestLayout = None
-        bestScore = -100000.0
-
-        for _ in range(maxAttempts):
-            for topo in topologiesList:
-                shuffledCandidates = list(candidateWords)
-                random.shuffle(shuffledCandidates)
-                
-                placements = self.solve(slots=topo, candidateWords=shuffledCandidates)
-                if placements:
-                    score = calculateLayoutScore(placements)
-                    if score > bestScore:
-                        bestScore = score
-                        bestLayout = placements
-
-        return bestLayout
-
-    def _getIntersection(self, slotA: Dict, slotB: Dict) -> Optional[Tuple[int, int]]:
-        dirA = "ACROSS" if slotA["direction"] in ("H", "ACROSS") else "DOWN"
-        dirB = "ACROSS" if slotB["direction"] in ("H", "ACROSS") else "DOWN"
-        if dirA == dirB:
-            return None
-
-        rA = slotA.get("start_row", slotA.get("row", 0))
-        cA = slotA.get("start_col", slotA.get("col", 0))
-        rB = slotB.get("start_row", slotB.get("row", 0))
-        cB = slotB.get("start_col", slotB.get("col", 0))
-
-        across = {"row": rA, "col": cA, "length": slotA["length"]} if dirA == "ACROSS" else {"row": rB, "col": cB, "length": slotB["length"]}
-        down = {"row": rB, "col": cB, "length": slotB["length"]} if dirA == "ACROSS" else {"row": rA, "col": cA, "length": slotA["length"]}
-
-        if (across["row"] >= down["row"] and across["row"] < down["row"] + down["length"] and
-            down["col"] >= across["col"] and down["col"] < across["col"] + across["length"]):
-            posAcross = down["col"] - across["col"]
-            posDown = across["row"] - down["row"]
-            return (posAcross, posDown) if dirA == "ACROSS" else (posDown, posAcross)
-        return None

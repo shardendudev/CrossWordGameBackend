@@ -35,4 +35,7 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "vector";'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
+        # Ensure updated telemetry columns exist
+        await conn.execute(text('ALTER TABLE user_gameplay_telemetry ADD COLUMN IF NOT EXISTS hints_revealed INTEGER DEFAULT 0;'))
+        await conn.execute(text('ALTER TABLE user_gameplay_telemetry ADD COLUMN IF NOT EXISTS deepest_hint_tier INTEGER DEFAULT 0;'))
         await conn.run_sync(Base.metadata.create_all)

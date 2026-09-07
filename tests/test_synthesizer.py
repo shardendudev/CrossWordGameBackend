@@ -29,7 +29,6 @@ async def test_generateLevelForUser():
         # Print visual 10x10 grid matrix
         print(f"\n [Synthesizer Test] Level Generated Successfully!")
         print(f"  - Level ID: {level_response.level_id}")
-        print(f"  - Topology ID: {level_response.topology_id}")
         print(f"  - Placed Movies: {len(level_response.placed_words)}")
         print(f"  - Clues Generated: {len(level_response.clues)}")
 

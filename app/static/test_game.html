@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Movie Crossword Test UI</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+    header { width: 100%; max-width: 1000px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 12px 20px; background: #1e293b; border-radius: 8px; border: 1px solid #334155; }
+    .badge { background: #3b82f6; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; }
+    .main-layout { display: flex; gap: 24px; width: 100%; max-width: 1000px; }
+    .left-panel { display: flex; flex-direction: column; align-items: center; gap: 16px; flex: 1; }
+    .grid { display: grid; grid-template-columns: repeat(10, 42px); grid-template-rows: repeat(10, 42px); gap: 2px; background: #090d16; padding: 4px; border: 2px solid #475569; border-radius: 6px; }
+    .cell { position: relative; width: 42px; height: 42px; background: #1e293b; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold; text-transform: uppercase; user-select: none; }
+    .cell.playable { background: #ffffff; color: #0f172a; cursor: text; }
+    .cell.active { background: #fef08a !important; }
+    .cell.highlight { background: #e0f2fe; }
+    .cell.error { background: #fecaca !important; color: #991b1b; }
+    .cell.hinted { background: #bbf7d0 !important; color: #166534; }
+    .cell-num { position: absolute; top: 1px; left: 2px; font-size: 9px; color: #64748b; font-weight: bold; pointer-events: none; }
+    .cell input { width: 100%; height: 100%; border: none; background: transparent; text-align: center; font-size: 18px; font-weight: bold; text-transform: uppercase; color: inherit; outline: none; }
+    .controls { display: flex; gap: 10px; width: 100%; justify-content: center; }
+    button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.15s; }
+    button:hover { background: #1d4ed8; }
+    button.secondary { background: #475569; }
+    button.secondary:hover { background: #334155; }
+    button.success { background: #16a34a; }
+    button.success:hover { background: #15803d; }
+    button.warning { background: #d97706; }
+    button.warning:hover { background: #b45309; }
+    .right-panel { flex: 1; display: flex; flex-direction: column; gap: 16px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+    .card h3 { margin-bottom: 10px; font-size: 15px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #334155; padding-bottom: 6px; }
+    .clue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; }
+    .clue-item { padding: 8px 10px; background: #0f172a; border-radius: 4px; font-size: 13px; cursor: pointer; border-left: 3px solid transparent; }
+    .clue-item:hover, .clue-item.active { border-left-color: #3b82f6; background: #1e293b; }
+    .clue-item b { color: #60a5fa; }
+    .history-list { list-style: none; display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; font-size: 13px; }
+    .history-item { background: #0f172a; padding: 8px 10px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+    .status-pill { font-size: 10px; padding: 2px 6px; border-radius: 10px; text-transform: uppercase; font-weight: bold; }
+    .status-completed { background: #14532d; color: #86efac; }
+    .status-in_progress { background: #78350f; color: #fde047; }
+    #modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); align-items: center; justify-content: center; }
+    #modal.show { display: flex; }
+    .modal-content { background: #1e293b; padding: 24px; border-radius: 8px; width: 380px; border: 1px solid #475569; text-align: center; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <span style="font-weight: bold; font-size: 16px;">🎬 Movie Crossword Test Client</span>
+      <span id="user-display" style="margin-left: 12px; font-size: 13px; color: #94a3b8;">User: Loading...</span>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <span>Skill: <span id="skill-display" class="badge">0.200</span></span>
+      <span>Games: <span id="games-display" class="badge" style="background: #64748b;">0</span></span>
+      <span id="timer" style="font-family: monospace; font-size: 16px; font-weight: bold; color: #38bdf8;">00:00</span>
+    </div>
+  </header>
+
+  <div class="main-layout">
+    <!-- LEFT: CROSSWORD GRID & GAMEPLAY BUTTONS -->
+    <div class="left-panel">
+      <div id="crossword-grid" class="grid"></div>
+      
+      <div class="controls">
+        <button id="btn-next" onclick="generateNewLevel()">⚡ Next Level</button>
+        <button id="btn-hint" class="warning" onclick="useHint()">💡 Hint (<span id="hint-count">0</span>)</button>
+        <button id="btn-submit" class="success" onclick="submitLevel()">✅ Submit Level</button>
+      </div>
+      <div id="status-msg" style="font-size: 13px; color: #94a3b8; min-height: 18px;"></div>
+    </div>
+
+    <!-- RIGHT: CLUES & HISTORY -->
+    <div class="right-panel">
+      <!-- CLUES -->
+      <div class="card">
+        <h3>Clues (Click to highlight word)</h3>
+        <div style="font-weight: bold; font-size: 12px; color: #38bdf8; margin: 4px 0;">ACROSS</div>
+        <ul id="clues-across" class="clue-list"></ul>
+        
+        <div style="font-weight: bold; font-size: 12px; color: #38bdf8; margin: 10px 0 4px 0;">DOWN</div>
+        <ul id="clues-down" class="clue-list"></ul>
+      </div>
+
+      <!-- PLAY HISTORY ARCHIVE -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h3>User Play History</h3>
+          <button class="secondary" style="padding: 2px 8px; font-size: 11px;" onclick="loadHistory()">Refresh</button>
+        </div>
+        <ul id="history-list" class="history-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- LEVEL COMPLETION MODAL -->
+  <div id="modal">
+    <div class="modal-content">
+      <h2 style="color: #4ade80; margin-bottom: 12px;">🎉 Level Solved!</h2>
+      <p id="modal-text" style="font-size: 14px; margin-bottom: 16px; color: #cbd5e1; line-height: 1.6;"></p>
+      <div style="display: flex; gap: 10px; justify-content: center;">
+        <button onclick="closeModal(); generateNewLevel();">Play Next Level</button>
+        <button class="secondary" onclick="closeModal()">Review Grid</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentUserId = localStorage.getItem("crossword_test_user_id");
+    let currentLevel = null;
+    let timerInterval = null;
+    let secondsElapsed = 0;
+    let hintsUsed = 0;
+    let activeSlotId = null;
+
+    async function initUser() {
+      if (!currentUserId) {
+        // Create fresh test user
+        const res = await fetch("/api/v1/users/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: "player_" + Math.random().toString(36).substring(2, 7) })
+        });
+        const data = await res.json();
+        currentUserId = data.user_id;
+        localStorage.setItem("crossword_test_user_id", currentUserId);
+      }
+      await refreshUserProfile();
+      await generateNewLevel();
+      await loadHistory();
+    }
+
+    async function refreshUserProfile() {
+      const res = await fetch(`/api/v1/users/${currentUserId}`);
+      if (res.ok) {
+        const user = await res.json();
+        document.getElementById("user-display").innerText = `User: ${user.username} (${user.user_id.substring(0, 8)}...)`;
+        document.getElementById("skill-display").innerText = user.current_skill_level.toFixed(3);
+        document.getElementById("games-display").innerText = user.total_games_played;
+      }
+    }
+
+    function startTimer() {
+      clearInterval(timerInterval);
+      secondsElapsed = 0;
+      updateTimerDisplay();
+      timerInterval = setInterval(() => {
+        secondsElapsed++;
+        updateTimerDisplay();
+      }, 1000);
+    }
+
+    function updateTimerDisplay() {
+      const m = String(Math.floor(secondsElapsed / 60)).padStart(2, "0");
+      const s = String(secondsElapsed % 60).padStart(2, "0");
+      document.getElementById("timer").innerText = `${m}:${s}`;
+    }
+
+    async function generateNewLevel() {
+      document.getElementById("status-msg").innerText = "Generating 6-movie level via OR-Tools CP-SAT...";
+      hintsUsed = 0;
+      document.getElementById("hint-count").innerText = hintsUsed;
+      
+      const res = await fetch("/api/v1/gameplay/generate-level", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: currentUserId, grid_size: 10 })
+      });
+
+      if (!res.ok) {
+        document.getElementById("status-msg").innerText = "Error generating level!";
+        return;
+      }
+
+      currentLevel = await res.json();
+      document.getElementById("status-msg").innerText = `Level loaded (Difficulty: ${currentLevel.target_difficulty.toFixed(2)})`;
+      renderBoard();
+      renderClues();
+      startTimer();
+      await loadHistory();
+    }
+
+    function renderBoard() {
+      const gridEl = document.getElementById("crossword-grid");
+      gridEl.innerHTML = "";
+
+      // Number map for cell slot numbers
+      const numMap = {};
+      let numCounter = 1;
+      currentLevel.clues.forEach(clue => {
+        const key = `${clue.start_row},${clue.start_col}`;
+        if (!numMap[key]) numMap[key] = numCounter++;
+        clue.num = numMap[key];
+      });
+
+      for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          const char = currentLevel.grid[r][c];
+          const isPlayable = char !== "" && char !== ".";
+          
+          const cell = document.createElement("div");
+          cell.className = `cell ${isPlayable ? "playable" : ""}`;
+          cell.dataset.row = r;
+          cell.dataset.col = c;
+
+          if (isPlayable) {
+            const numKey = `${r},${c}`;
+            if (numMap[numKey]) {
+              const numSpan = document.createElement("span");
+              numSpan.className = "cell-num";
+              numSpan.innerText = numMap[numKey];
+              cell.appendChild(numSpan);
+            }
+
+            const input = document.createElement("input");
+            input.maxLength = 1;
+            input.dataset.answer = char.toUpperCase();
+            
+            input.addEventListener("focus", () => onCellFocus(r, c));
+            input.addEventListener("keydown", (e) => onCellKey(e, r, c));
+            input.addEventListener("input", (e) => onCellInput(e, r, c));
+
+            cell.appendChild(input);
+          }
+
+          gridEl.appendChild(cell);
+        }
+      }
+    }
+
+    function renderClues() {
+      const acrossEl = document.getElementById("clues-across");
+      const downEl = document.getElementById("clues-down");
+      acrossEl.innerHTML = "";
+      downEl.innerHTML = "";
+
+      currentLevel.clues.forEach(clue => {
+        const li = document.createElement("li");
+        li.className = "clue-item";
+        li.id = `clue-${clue.slot_id}`;
+        li.innerHTML = `<b>${clue.num}. [${clue.length}]</b> ${clue.clue_text}`;
+        li.onclick = () => highlightSlot(clue);
+
+        if (clue.direction === "ACROSS") acrossEl.appendChild(li);
+        else downEl.appendChild(li);
+      });
+    }
+
+    function highlightSlot(clue) {
+      activeSlotId = clue.slot_id;
+      document.querySelectorAll(".cell").forEach(c => c.classList.remove("active", "highlight"));
+      document.querySelectorAll(".clue-item").forEach(c => c.classList.remove("active"));
+      
+      const clueEl = document.getElementById(`clue-${clue.slot_id}`);
+      if (clueEl) clueEl.classList.add("active");
+
+      // Highlight cells in word
+      for (let i = 0; i < clue.length; i++) {
+        const r = clue.direction === "ACROSS" ? clue.start_row : clue.start_row + i;
+        const c = clue.direction === "ACROSS" ? clue.start_col + i : clue.start_col;
+        const cell = document.querySelector(`.cell[data-row='${r}'][data-col='${c}']`);
+        if (cell) cell.classList.add("highlight");
+        if (i === 0 && cell) {
+          const input = cell.querySelector("input");
+          if (input) input.focus();
+        }
+      }
+    }
+
+    function onCellFocus(r, c) {
+      document.querySelectorAll(".cell").forEach(cell => cell.classList.remove("active"));
+      const cell = document.querySelector(`.cell[data-row='${r}'][data-col='${c}']`);
+      if (cell) cell.classList.add("active");
+    }
+
+    function onCellInput(e, r, c) {
+      const val = e.target.value.toUpperCase();
+      e.target.value = val;
+      e.target.parentElement.classList.remove("error");
+
+      // Auto advance to next cell
+      if (val && activeSlotId) {
+        const clue = currentLevel.clues.find(cl => cl.slot_id === activeSlotId);
+        if (clue) {
+          const nextR = clue.direction === "ACROSS" ? r : r + 1;
+          const nextC = clue.direction === "ACROSS" ? c + 1 : c;
+          const nextCell = document.querySelector(`.cell[data-row='${nextR}'][data-col='${nextC}'] input`);
+          if (nextCell) nextCell.focus();
+        }
+      }
+    }
+
+    function onCellKey(e, r, c) {
+      if (e.key === "Backspace" && !e.target.value) {
+        // Move back
+        const prev = document.querySelector(`.cell[data-row='${r}'][data-col='${c-1}'] input`) ||
+                     document.querySelector(`.cell[data-row='${r-1}'][data-col='${c}'] input`);
+        if (prev) prev.focus();
+      }
+    }
+
+    function useHint() {
+      // Reveal the active or first blank cell
+      const activeCell = document.querySelector(".cell.active input");
+      const target = activeCell || document.querySelector(".cell.playable input:not([value])");
+      if (target) {
+        target.value = target.dataset.answer;
+        target.parentElement.classList.add("hinted");
+        hintsUsed++;
+        document.getElementById("hint-count").innerText = hintsUsed;
+      }
+    }
+
+    async function submitLevel() {
+      clearInterval(timerInterval);
+      
+      let errors = 0;
+      let solvedCount = 0;
+      let totalPlayable = 0;
+
+      document.querySelectorAll(".cell.playable input").forEach(input => {
+        totalPlayable++;
+        const typed = input.value.trim().toUpperCase();
+        const expected = input.dataset.answer;
+        if (typed !== expected) {
+          errors++;
+          input.parentElement.classList.add("error");
+        } else {
+          solvedCount++;
+        }
+      });
+
+      const isCompleted = (errors === 0);
+
+      // Submit Telemetry to Backend
+      const payload = {
+        user_id: currentUserId,
+        session_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        level_id: currentLevel.level_id,
+        time_taken_seconds: Math.max(1, secondsElapsed),
+        free_hints_used: hintsUsed,
+        cell_error_count: errors,
+        is_completed: isCompleted
+      };
+
+      const res = await fetch("/api/v1/gameplay/submit-telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const telemetryRes = await res.json();
+        await refreshUserProfile();
+        await loadHistory();
+
+        const modalText = `
+          <b>Time Taken:</b> ${secondsElapsed}s<br>
+          <b>Hints Used:</b> ${hintsUsed}<br>
+          <b>Cell Errors:</b> ${errors}<br>
+          <hr style="border: 0; border-top: 1px solid #334155; margin: 10px 0;">
+          <b>Previous Skill:</b> ${telemetryRes.previous_skill_level.toFixed(3)}<br>
+          <b>New Skill:</b> ${telemetryRes.new_skill_level.toFixed(3)} 
+          <span style="color: ${telemetryRes.skill_delta >= 0 ? '#4ade80' : '#f87171'}">
+            (${telemetryRes.skill_delta >= 0 ? '+' : ''}${telemetryRes.skill_delta.toFixed(3)})
+          </span>
+        `;
+        document.getElementById("modal-text").innerHTML = modalText;
+        document.getElementById("modal").classList.add("show");
+      } else {
+        alert("Telemetry submission error! Check terminal logs.");
+      }
+    }
+
+    function closeModal() {
+      document.getElementById("modal").classList.remove("show");
+    }
+
+    async function loadHistory() {
+      const res = await fetch(`/api/v1/gameplay/history/${currentUserId}?limit=10`);
+      if (res.ok) {
+        const history = await res.json();
+        const list = document.getElementById("history-list");
+        list.innerHTML = "";
+        
+        if (history.length === 0) {
+          list.innerHTML = "<li style='color: #64748b;'>No games recorded yet.</li>";
+          return;
+        }
+
+        history.forEach(item => {
+          const li = document.createElement("li");
+          li.className = "history-item";
+          const titles = (item.movies || []).map(m => m.title).slice(0, 3).join(", ");
+          li.innerHTML = `
+            <div>
+              <div style="font-weight: bold; color: #e2e8f0;">${titles || 'Level ' + item.level_id.substring(0,6)}...</div>
+              <div style="font-size: 11px; color: #64748b;">${item.time_taken_seconds ? item.time_taken_seconds + 's • ' : ''}Diff: ${(item.target_difficulty || 0).toFixed(2)}</div>
+            </div>
+            <span class="status-pill status-${item.status}">${item.status}</span>
+          `;
+          list.appendChild(li);
+        });
+      }
+    }
+
+    // Launch on page load
+    initUser();
+  </script>
+</body>
+</html>

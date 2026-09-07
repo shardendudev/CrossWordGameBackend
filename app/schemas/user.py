@@ -1,8 +1,8 @@
 import uuid
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel,Field, ConfigDict
 
 class UserCreate(BaseModel):
-    username:str
+    username:str = Field(...,min_length=3,max_length=32,pattern=r'[a-zA-Z0-9_]+$')
 
 class UserResponse(BaseModel):
     user_id: uuid.UUID

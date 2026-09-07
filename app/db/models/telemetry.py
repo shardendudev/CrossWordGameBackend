@@ -16,5 +16,7 @@ class UserGameplayTelemetry(Base):
     time_taken_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     free_hints_used: Mapped[int] = mapped_column(Integer, default=0)
     premium_hints_used: Mapped[int] = mapped_column(Integer, default=0)
+    hints_revealed: Mapped[int] = mapped_column(Integer, default=0)
+    deepest_hint_tier: Mapped[int] = mapped_column(Integer, default=0)
     cell_error_count: Mapped[int] = mapped_column(Integer, default=0)
     is_completed: Mapped[bool] = mapped_column(Boolean,default=True)
