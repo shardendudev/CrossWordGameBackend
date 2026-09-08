@@ -62,10 +62,7 @@ def updateTasteVector(
     solvedMovieVector: list[float] | None,
     beta: float = 0.60
 ) -> list[float] | None:
-    """
-    Updates player movie taste vector u using weighted running average.
-    - Addresses Code Review 3.7: Reduced beta from 0.85 to 0.70 so taste adapts quickly to recent games.
-    """
+    
     if solvedMovieVector is None:
         return currentVector
     

@@ -65,6 +65,9 @@ def filterConnectableCandidates(candidateWords: List[Dict[str, Any]], maxCount: 
     if len(valid) <= maxCount:
         return valid
 
+    # Cap to top 50 candidates before calculating intersection matrix
+    valid = valid[:50]
+
     # Calculate letter overlap counts
     word_sets = [set(w["clean_title"]) for w in valid]
     scores = []
@@ -77,7 +80,7 @@ def filterConnectableCandidates(candidateWords: List[Dict[str, Any]], maxCount: 
     return [item[1] for item in scores[:maxCount]]
 
 
-SOLVER_TIME_LIMIT_S: float = 2.0  # shared time budget for OR-Tools CP-SAT
+SOLVER_TIME_LIMIT_S: float = 0.35  # Fast 350ms time budget for OR-Tools CP-SAT
 
 
 def solveWithORTools(
@@ -262,6 +265,9 @@ def solveFreeform(
     if not valid_candidates:
         return None
 
+    # Cap to top 35 candidate words to keep greedy shuffle loops fast (< 20ms)
+    valid_candidates = valid_candidates[:35]
+
     for attempt in range(maxRetries):
         shuffled = list(valid_candidates)
         random.shuffle(shuffled)
@@ -370,7 +376,7 @@ def solveCrossword(
 
     # 2. Resilient Fallback
     logger.info("OR-Tools did not find a layout within time limit, executing freeform fallback.")
-    return solveFreeform(candidateWords, targetCount=targetCount, gridSize=gridSize, maxRetries=50)
+    return solveFreeform(candidateWords, targetCount=targetCount, gridSize=gridSize, maxRetries=15)
 
 
 def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:

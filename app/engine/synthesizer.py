@@ -118,6 +118,9 @@ async def generateLevelForUser(
     userId: uuid.UUID,
     requestedDifficulty: Optional[float] = None
 ) -> LevelResponse:
+    import time
+    t_start = time.perf_counter()
+
     # 1. Fetch User Profile
     result = await db.execute(select(User).where(User.user_id == userId))
     user = result.scalars().first()
@@ -138,13 +141,18 @@ async def generateLevelForUser(
     played_imdb_ids = played_imdb_ids.union(store_played_ids)
 
     # 3. Fetch Candidate Movies
+    t_db_start = time.perf_counter()
     if taste_vector is not None:
         candidates = await recommendMoviesByTaste(db, tasteVector=taste_vector, targetDifficulty=target_diff, limit=300, margin=0.35)
+        mode_used = "Taste-Vector (pgvector)"
     else:
         candidates = await fetchCandidateMovies(db, targetDifficulty=target_diff, limit=300, margin=0.35)
+        mode_used = "Cold-Start (IMDb Votes)"
 
     if not candidates or len(candidates) < 10:
         candidates = await fetchCandidateMovies(db, targetDifficulty=0.5, limit=500, margin=0.50)
+        mode_used += " -> Fallback"
+    t_db_end = time.perf_counter()
 
     # 4. Filter out previously played movies
     unplayed_candidates = [m for m in candidates if m.imdb_id not in played_imdb_ids]
@@ -159,15 +167,25 @@ async def generateLevelForUser(
         }
         for m in final_candidates if m.clean_title
     ]
-    # Key by imdb_id to avoid silent collisions when two movies share the same clean_title
     movie_map = {m.imdb_id: m for m in final_candidates if m.imdb_id}
 
     # 6. Solve crossword layout (OR-Tools primary, greedy fallback offloaded to thread pool)
+    t_solver_start = time.perf_counter()
     solution_placements = await asyncio.to_thread(
         solveCrossword,
         candidate_dicts,
         targetCount=6,
         gridSize=10
+    )
+    t_solver_end = time.perf_counter()
+
+    t_total = time.perf_counter() - t_start
+    print(
+        f"\n🚀 [PERF] Level Gen Total: {t_total*1000:.1f}ms | "
+        f"DB Fetch ({mode_used}): {(t_db_end - t_db_start)*1000:.1f}ms | "
+        f"CSP Solver: {(t_solver_end - t_solver_start)*1000:.1f}ms | "
+        f"Candidates Pool: {len(candidate_dicts)}\n",
+        flush=True
     )
 
     # 7. Build Clues list and Hint Cache entries
