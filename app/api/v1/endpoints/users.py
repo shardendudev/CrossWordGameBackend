@@ -1,3 +1,4 @@
+import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -7,6 +8,7 @@ from app.db.session import get_db
 from app.db.models.user import User
 from app.schemas.user import UserCreate, UserResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -18,9 +20,11 @@ async def createUser(
     """
     Registers a new player profile with default skill level (0.200) and hint balance.
     """
+    logger.info("Creating new user profile for username '%s'", payload.username)
     # Check if username is already taken
     existing_res = await db.execute(select(User).where(User.username == payload.username))
     if existing_res.scalars().first():
+        logger.warning("Registration failed: Username '%s' is already registered.", payload.username)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Username '{payload.username}' is already registered."
@@ -35,8 +39,9 @@ async def createUser(
     db.add(user)
     await db.commit()
     await db.refresh(user)
-
+    logger.info("User '%s' created successfully with user_id='%s'", user.username, user.user_id)
     return user
+
 
 
 @router.post("/login", response_model=UserResponse)

@@ -37,6 +37,9 @@ async def init_db():
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
         # Safe migration: add created_at to hint cache for existing tables
         await conn.execute(text('ALTER TABLE level_hint_cache ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();'))
+        await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS levels_generated INTEGER DEFAULT 0;'))
+        await conn.execute(text('ALTER TABLE user_gameplay_telemetry ADD COLUMN IF NOT EXISTS level_number INTEGER;'))
+        await conn.execute(text('ALTER TABLE user_gameplay_telemetry ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();'))
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text('CREATE INDEX IF NOT EXISTS idx_movies_semantic_embedding_hnsw '
                                 'ON movies USING hnsw (semantic_embedding vector_cosine_ops);'))

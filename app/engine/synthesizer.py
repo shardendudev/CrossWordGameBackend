@@ -1,3 +1,4 @@
+import re
 import uuid
 import hashlib
 import logging
@@ -11,9 +12,8 @@ from app.db.models.movie import Movie
 from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
 from app.db.models.hint_cache import LevelHintCache
 from app.schemas.gameplay import LevelResponse
-from app.services.history_store import history_store
 from app.engine.recommender import recommendMoviesByTaste, fetchCandidateMovies
-from app.engine.csp_solver import solveCrossword
+from app.engine.csp_solver import solveCrossword, get_title_stem
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def build_hint_stack(
             "tier": h["tier"],
             "type": h["type"],
             "text": h["text"],
-            "cost": 0 if i == 0 else (0 if i <= 2 else 1)
+            "cost": 0
         })
     return stack
 
@@ -116,7 +116,8 @@ def build_hint_stack(
 async def generateLevelForUser(
     db: AsyncSession,
     userId: uuid.UUID,
-    requestedDifficulty: Optional[float] = None
+    requestedDifficulty: Optional[float] = None,
+    excludeImdbIds: Optional[List[str]] = None
 ) -> LevelResponse:
     import time
     t_start = time.perf_counter()
@@ -129,16 +130,25 @@ async def generateLevelForUser(
     taste_vector = user.taste_vector if user else None
     target_diff = requestedDifficulty if requestedDifficulty is not None else skill_level
 
-    # 2. Fetch Played IMDb IDs for this User to prevent duplicates across levels
+    if user:
+        user.levels_generated = User.levels_generated + 1
+        await db.flush()
+        await db.refresh(user)
+        level_number = user.levels_generated
+    else:
+        level_number = 1
+
+    # 2. Fetch Played IMDb IDs for this User from Postgres Telemetry
     history_query = select(UserMovieTelemetry.imdb_id).where(
         UserMovieTelemetry.user_id == userId
     )
     history_res = await db.execute(history_query)
     played_imdb_ids = set(history_res.scalars().all())
 
-    # Union with history_store for instant deduplication across in-progress and completed levels
-    store_played_ids = await history_store.get_played_movie_ids(str(userId))
-    played_imdb_ids = played_imdb_ids.union(store_played_ids)
+    # Combine Postgres telemetry history with client-passed Dexie.js exclusion list
+    if excludeImdbIds:
+        played_imdb_ids = played_imdb_ids.union(excludeImdbIds)
+
 
     # 3. Fetch Candidate Movies
     t_db_start = time.perf_counter()
@@ -158,16 +168,24 @@ async def generateLevelForUser(
     unplayed_candidates = [m for m in candidates if m.imdb_id not in played_imdb_ids]
     final_candidates = unplayed_candidates if len(unplayed_candidates) >= 10 else candidates
 
-    # 5. Format Candidate Dictionaries for Freeform Solver
-    candidate_dicts = [
-        {
-            "imdb_id": m.imdb_id,
-            "title": m.title,
-            "clean_title": m.clean_title
-        }
-        for m in final_candidates if m.clean_title
-    ]
-    movie_map = {m.imdb_id: m for m in final_candidates if m.imdb_id}
+    # 5. Format Candidate Dictionaries for Freeform Solver (Deduplicate by Title Stem)
+    seen_stems = set()
+    candidate_dicts = []
+    filtered_candidates = []
+    for m in final_candidates:
+        if not m.clean_title:
+            continue
+        stem = get_title_stem(m.clean_title)
+        if stem not in seen_stems:
+            seen_stems.add(stem)
+            candidate_dicts.append({
+                "imdb_id": m.imdb_id,
+                "title": m.title,
+                "clean_title": m.clean_title
+            })
+            filtered_candidates.append(m)
+
+    movie_map = {m.imdb_id: m for m in filtered_candidates if m.imdb_id}
 
     # 6. Solve crossword layout (OR-Tools primary, greedy fallback offloaded to thread pool)
     t_solver_start = time.perf_counter()
@@ -180,13 +198,13 @@ async def generateLevelForUser(
     t_solver_end = time.perf_counter()
 
     t_total = time.perf_counter() - t_start
-    print(
-        f"\n🚀 [PERF] Level Gen Total: {t_total*1000:.1f}ms | "
+    logger.info(
+        f"[PERF] Level Gen Total: {t_total*1000:.1f}ms | "
         f"DB Fetch ({mode_used}): {(t_db_end - t_db_start)*1000:.1f}ms | "
         f"CSP Solver: {(t_solver_end - t_solver_start)*1000:.1f}ms | "
-        f"Candidates Pool: {len(candidate_dicts)}\n",
-        flush=True
+        f"Candidates Pool: {len(candidate_dicts)}"
     )
+
 
     # 7. Build Clues list and Hint Cache entries
     clues = []
@@ -195,7 +213,23 @@ async def generateLevelForUser(
     if solution_placements:
         grid = [["" for _ in range(10)] for _ in range(10)]
 
-        for slot in solution_placements:
+        # Sort placements by row, then col, then direction (ACROSS first) for standard crossword numbering
+        sorted_placements = sorted(
+            solution_placements,
+            key=lambda p: (p["row"], p["col"], 0 if p["direction"] == "ACROSS" else 1)
+        )
+
+        # Assign standard crossword grid numbers (1, 2, 3...) to unique starting cells
+        num_map = {}
+        curr_num = 1
+        for slot in sorted_placements:
+            pos_key = (slot["row"], slot["col"])
+            if pos_key not in num_map:
+                num_map[pos_key] = curr_num
+                curr_num += 1
+            slot["number"] = num_map[pos_key]
+
+        for slot in sorted_placements:
             clean_word = slot["word"]
             # Lookup by imdb_id to avoid clean_title collision
             imdb_id = slot.get("movie", {}).get("imdb_id")
@@ -223,12 +257,24 @@ async def generateLevelForUser(
 
             post_trivia = (m.awards_summary or m.iconic_dialogue or "Iconic cinema classic!") if m else ""
 
+            # Extract individual word lengths from movie title (e.g. "The Batman" -> [3, 6], "(3,6)")
+            raw_title = (m.clean_title or m.title) if m else clean_word
+            matched_words = re.findall(r'[A-Za-z0-9]+', raw_title)
+            if matched_words:
+                word_lengths = [len(w) for w in matched_words]
+            else:
+                word_lengths = [len(clean_word)]
+            word_pattern = f"({','.join(str(l) for l in word_lengths)})"
+
             clue_obj = {
                 "slot_id": slot["slot_id"],
+                "number": slot["number"],
                 "direction": slot["direction"],
                 "row": slot["row"],
                 "col": slot["col"],
                 "length": slot["length"],
+                "word_lengths": word_lengths,
+                "word_pattern": word_pattern,
                 "imdb_id": m.imdb_id if m else None,
                 "display_title": m.title if m else clean_word,
                 "difficulty": round(m.base_difficulty, 3) if m else 0.5,
@@ -240,6 +286,7 @@ async def generateLevelForUser(
             }
             clues.append(clue_obj)
 
+
         # NOTE: db.commit() is intentionally NOT called here.
         # The route layer (generateLevel in gameplay.py) commits AFTER
         # history_store.save_generated_level() succeeds, keeping both writes atomic.
@@ -248,7 +295,10 @@ async def generateLevelForUser(
 
     return LevelResponse(
         level_id=level_id,
+        level_number=level_number,
         target_difficulty=target_diff,
+        free_hints_remaining=2,
+        premium_hints_remaining=user.premium_hints_balance if user else 5,
         grid=grid,
         clues=clues
     )

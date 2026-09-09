@@ -9,15 +9,12 @@ sqlalchemy>=2.0.30
 asyncpg>=0.29.0
 greenlet>=3.0.0
 pgvector>=0.3.0
-alembic>=1.13.0
-aiosqlite>=0.20.0
 
 # AI & Vector Processing
 sentence-transformers>=3.0.0
 torch>=2.3.0
 transformers>=4.42.0
 numpy>=1.26.0
-pandas>=2.2.0
 
 # Constraint Programming
 ortools>=9.10.0

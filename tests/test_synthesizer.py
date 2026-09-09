@@ -45,6 +45,7 @@ async def test_played_movie_deduplication(db_session: AsyncSession):
 
     # 1. Generate Level 1
     level1 = await generateLevelForUser(db_session, userId=test_user_id, requestedDifficulty=0.35)
+    assert level1.level_number == 1
     level1_imdb_ids = {c.imdb_id for c in level1.clues if c.imdb_id}
     assert len(level1_imdb_ids) > 0
 
@@ -60,6 +61,7 @@ async def test_played_movie_deduplication(db_session: AsyncSession):
 
     # 3. Generate Level 2 for the same user
     level2 = await generateLevelForUser(db_session, userId=test_user_id, requestedDifficulty=0.35)
+    assert level2.level_number == 2
     level2_imdb_ids = {c.imdb_id for c in level2.clues if c.imdb_id}
 
     # 4. Assert ZERO overlap between Level 1 and Level 2 movies!

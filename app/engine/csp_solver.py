@@ -1,9 +1,24 @@
+import re
 import random
 import logging
 from typing import List, Dict, Tuple, Optional, Set, Any
 from ortools.sat.python import cp_model
 
 logger = logging.getLogger(__name__)
+
+
+def get_title_stem(title: str) -> str:
+    """
+    Normalizes clean_title or title into a base franchise stem to prevent
+    multiple movies from the same franchise (e.g. 'Toy Story' and 'Toy Story 3')
+    from being placed in the same level.
+    """
+    s = title.upper().strip()
+    s = re.sub(r'(\b|_)?(PART|VOL|VOLUME|CHAPTER|EPISODE|SEASON)\b.*$', '', s)
+    s = re.sub(r'(\d+|II|III|IV|V|VI|VII|VIII|IX|X)+$', '', s)
+    s = s.strip()
+    return s if len(s) >= 3 else title.upper().strip()
+
 
 # 1. Spatial Placement Rule Validator (used by greedy solver & bounds checker)
 
@@ -80,7 +95,8 @@ def filterConnectableCandidates(candidateWords: List[Dict[str, Any]], maxCount: 
     return [item[1] for item in scores[:maxCount]]
 
 
-SOLVER_TIME_LIMIT_S: float = 0.35  # Fast 350ms time budget for OR-Tools CP-SAT
+SOLVER_TIME_LIMIT_S: float = 0.75  # 750ms time budget for OR-Tools CP-SAT
+
 
 
 def solveWithORTools(
@@ -130,12 +146,20 @@ def solveWithORTools(
     # C1: Select exactly targetCount words
     model.Add(sum(x) == targetCount)
 
-    # C2: At most 1 placement per candidate movie (no duplicates)
+    # C2: At most 1 placement per candidate movie and at most 1 per title stem (no franchise duplicates)
     by_word: Dict[int, List[int]] = {}
+    by_stem: Dict[str, List[int]] = {}
     for p in placements:
         by_word.setdefault(p[1], []).append(p[0])
+        stem = get_title_stem(p[2])
+        by_stem.setdefault(stem, []).append(p[0])
+
     for indices in by_word.values():
         model.Add(sum(x[i] for i in indices) <= 1)
+
+    for indices in by_stem.values():
+        model.Add(sum(x[i] for i in indices) <= 1)
+
 
     # C3: Cell level direction & letter consistency constraints
     intersection_pairs: List[Tuple[int, int]] = []
@@ -275,9 +299,11 @@ def solveFreeform(
         grid = [["" for _ in range(gridSize)] for _ in range(gridSize)]
         placed = []
         placed_titles: Set[str] = set()
+        placed_stems: Set[str] = set()
 
         seed_movie = shuffled[0]
         seed_word = seed_movie["clean_title"]
+        seed_stem = get_title_stem(seed_word)
         seed_len = len(seed_word)
         seed_r = 3
         seed_c = max(1, (gridSize - seed_len) // 2)
@@ -297,14 +323,17 @@ def solveFreeform(
             "direction": "ACROSS"
         })
         placed_titles.add(seed_word)
+        placed_stems.add(seed_stem)
 
         for cand in shuffled[1:]:
             if len(placed) >= targetCount:
                 break
             
             clean_word = cand["clean_title"]
-            if clean_word in placed_titles:
+            cand_stem = get_title_stem(clean_word)
+            if clean_word in placed_titles or cand_stem in placed_stems:
                 continue
+
 
             placed_this_word = False
             for p in list(placed):
@@ -342,8 +371,10 @@ def solveFreeform(
                                     "direction": new_dir
                                 })
                                 placed_titles.add(clean_word)
+                                placed_stems.add(cand_stem)
                                 placed_this_word = True
                                 break
+
 
         if len(placed) >= targetCount:
             return placed
@@ -376,7 +407,8 @@ def solveCrossword(
 
     # 2. Resilient Fallback
     logger.info("OR-Tools did not find a layout within time limit, executing freeform fallback.")
-    return solveFreeform(candidateWords, targetCount=targetCount, gridSize=gridSize, maxRetries=15)
+    return solveFreeform(candidateWords, targetCount=targetCount, gridSize=gridSize, maxRetries=50)
+
 
 
 def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:

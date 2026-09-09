@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from app.main import app
 from app.db.session import get_db, init_db, engine
-from app.services.history_store import HistoryStore, history_store
+
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -29,19 +29,17 @@ async def db_session():
     """
     connection = await engine.connect()
     transaction = await connection.begin()
-    session = AsyncSession(bind=connection, expire_on_commit=False)
-
-    # Nested savepoint transaction so db.commit() calls inside endpoints don't commit to real DB
-    nested = await connection.begin_nested()
-
-    @pytest.hookimpl
-    def reset_savepoint():
-        pass
+    session = AsyncSession(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint"
+    )
 
     yield session
 
     await session.close()
-    await transaction.rollback()
+    if transaction.is_active:
+        await transaction.rollback()
     await connection.close()
 
 

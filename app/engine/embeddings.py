@@ -15,11 +15,11 @@ class MovieEmbeddingEngine:
         if self._model is None:
             try:
                 from sentence_transformers import SentenceTransformer 
-                logger.info(f"Loading embedding mode: {self.modelName}")
+                logger.info("Loading embedding model: %s", self.modelName)
                 self._model = SentenceTransformer(self.modelName)
 
             except Exception as e:
-                logger.warning(f"Could not load SentenceTransformer ({e}). Fallback to zero vector. ")
+                logger.warning("Could not load SentenceTransformer (%s). Fallback to zero vector.", e)
                 self._model = False
             
         return self._model
@@ -40,14 +40,11 @@ class MovieEmbeddingEngine:
             model = self._getModel()
 
             if model:
-                embeddings =  model.encode(semanticPayload,normalize_embeddings=True)
-
+                embeddings = model.encode(semanticPayload, normalize_embeddings=True)
                 return embeddings.tolist()
-
-            
-
+            return [0.0] * 1024
         except Exception as e:
-            logger.warning(f"Could not generate the embeddings ({e})")
+            logger.warning("Could not generate the embeddings (%s)", e)
             return [0.0] * 1024
             
 

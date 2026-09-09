@@ -1,23 +1,31 @@
+import time
+import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.core.config import settings
+from app.core.logging_config import setup_logging
 from app.db.session import init_db
 from app.api.v1.router import api_router
-from app.services.history_store import history_store
 
 APP_VERSION = "1.0.0"
+
+setup_logging()
+logger = logging.getLogger("app.main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initializes database extensions and tables on application startup."""
+    """Initializes database extensions, tables, and logging on application startup."""
+    logger.info("Initializing application startup sequence...")
     await init_db()
-    await history_store.init_db()
+    logger.info("PostgreSQL database & extensions initialized successfully.")
     yield
+    logger.info("Application shutdown completed.")
+
 
 
 app = FastAPI(
@@ -29,17 +37,33 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()] if settings.ALLOWED_ORIGINS else ["*"]
+
 # Configure CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Logs incoming HTTP requests, response status codes, and latency."""
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        f"{request.method} {request.url.path} -> status={response.status_code} ({duration_ms:.1f}ms)"
+    )
+    return response
+
+
 # Mount API v1 Routes
 app.include_router(api_router, prefix="/api/v1")
+
 
 
 @app.get("/", tags=["Health Check"])

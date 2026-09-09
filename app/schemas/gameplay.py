@@ -6,15 +6,19 @@ from pydantic import BaseModel, Field, ConfigDict
 class GenerateLevelRequest(BaseModel):
     user_id: uuid.UUID
     requested_difficulty: Optional[float] = None
-    # grid_size is fixed at 10 and not wired through the solver — removed to avoid misleading API contract
+    exclude_imdb_ids: Optional[List[str]] = Field(default=None, max_length=500, description="Optional list of played IMDb IDs from client Dexie store to exclude from candidate selection")
+
 
 
 class ClueItem(BaseModel):
     slot_id: str
+    number: Optional[int] = None
     direction: str
     row: int
     col: int
     length: int
+    word_lengths: Optional[List[int]] = Field(default=None, description="Lengths of individual words in movie title, e.g. [3, 6]")
+    word_pattern: Optional[str] = Field(default=None, description="Formatted word lengths pattern, e.g. '(3,6)'")
     imdb_id: Optional[str] = None
     display_title: str
     difficulty: Optional[float] = None
@@ -26,9 +30,13 @@ class ClueItem(BaseModel):
 
 
 
+
 class LevelResponse(BaseModel):
     level_id: uuid.UUID
+    level_number: int
     target_difficulty: float
+    free_hints_remaining: int = 2
+    premium_hints_remaining: int = 5
     grid: List[List[str]]
     clues: List[ClueItem]
 
@@ -61,12 +69,15 @@ class SubmitTelemetryRequest(BaseModel):
     user_id: uuid.UUID
     session_id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4)
     level_id: uuid.UUID
+    level_number: Optional[int] = Field(default=None, description="Sequential level number assigned at generation")
+    imdb_ids: Optional[List[str]] = Field(default=None, description="Optional list of movie IMDb IDs in the level")
     time_taken_seconds: int = Field(..., ge=1)
     free_hints_used: int = Field(default=0, ge=0)
     premium_hints_used: int = Field(default=0, ge=0)
     cell_error_count: int = Field(default=0, ge=0)
     is_completed: bool = True
     hint_usage: Optional[List[MovieHintUsage]] = None
+
 
 
 class TelemetryResponse(BaseModel):
@@ -82,6 +93,7 @@ class LevelHistoryItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     level_id: str
+    level_number: Optional[int] = 1
     user_id: str
     status: str
     target_difficulty: Optional[float] = None

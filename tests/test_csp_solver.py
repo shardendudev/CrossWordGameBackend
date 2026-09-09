@@ -32,6 +32,26 @@ def test_solveCrossword_set_2():
     _run_and_render_solver("SET 2: DRAMA & THRILLERS", sample_candidates)
 
 
+def test_solveCrossword_prevents_franchise_duplicates():
+    # Includes both Toy Story and Toy Story 3
+    sample_candidates = [
+        {"imdb_id": "tt0114709", "title": "Toy Story", "clean_title": "TOYSTORY"},
+        {"imdb_id": "tt0435761", "title": "Toy Story 3", "clean_title": "TOYSTORY3"},
+        {"imdb_id": "tt0137523", "title": "Fight Club", "clean_title": "FIGHTCLUB"},
+        {"imdb_id": "tt0120338", "title": "Titanic", "clean_title": "TITANIC"},
+        {"imdb_id": "tt0172495", "title": "Gladiator", "clean_title": "GLADIATOR"},
+        {"imdb_id": "tt0133093", "title": "Matrix", "clean_title": "MATRIX"},
+        {"imdb_id": "tt0078748", "title": "Alien", "clean_title": "ALIEN"},
+        {"imdb_id": "tt7286456", "title": "Joker", "clean_title": "JOKER"},
+    ]
+    placements = solveCrossword(sample_candidates, targetCount=6, gridSize=10)
+    assert placements is not None
+    words = [p["word"] for p in placements]
+    # Ensure BOTH TOYSTORY and TOYSTORY3 are not present in the same level
+    assert not ("TOYSTORY" in words and "TOYSTORY3" in words), "Franchise titles Toy Story & Toy Story 3 must not coexist in the same level!"
+
+
+
 def _run_and_render_solver(test_name: str, candidates: list):
     placements = solveCrossword(candidates, targetCount=6, gridSize=10)
 
