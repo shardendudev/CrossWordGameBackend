@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
+        if self.POSTGRES_SERVER.startswith("/cloudsql/"):
+            return f'postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@/{self.POSTGRES_DB}?host={self.POSTGRES_SERVER}'
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     model_config = SettingsConfigDict(
