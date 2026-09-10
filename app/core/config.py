@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str  # Required — must be set in .env
+    POSTGRES_PASSWORD: str = ""
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "movie_crossword_db"
