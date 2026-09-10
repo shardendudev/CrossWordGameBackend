@@ -1,3 +1,4 @@
+import urllib.parse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -13,9 +14,11 @@ class Settings(BaseSettings):
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
+        # URL-encode the password to safely handle special characters like @, #, ?, etc.
+        safe_password = urllib.parse.quote_plus(self.POSTGRES_PASSWORD)
         if self.POSTGRES_SERVER.startswith("/cloudsql/"):
-            return f'postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@/{self.POSTGRES_DB}?host={self.POSTGRES_SERVER}'
-        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            return f'postgresql+asyncpg://{self.POSTGRES_USER}:{safe_password}@/{self.POSTGRES_DB}?host={self.POSTGRES_SERVER}'
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{safe_password}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     model_config = SettingsConfigDict(
         env_file=".env",
