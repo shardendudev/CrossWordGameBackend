@@ -1,0 +1,7 @@
+# Optional Data Seeding & Model Generation Dependencies
+-r requirements.txt
+
+# AI Embedding Model Generator (Only needed for scripts/migrate_from_sqlite.py)
+sentence-transformers>=3.0.0
+torch>=2.3.0
+transformers>=4.42.0
