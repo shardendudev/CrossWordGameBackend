@@ -21,8 +21,11 @@ logger = logging.getLogger("app.main")
 async def lifespan(app: FastAPI):
     """Initializes database extensions, tables, and logging on application startup."""
     logger.info("Initializing application startup sequence...")
-    await init_db()
-    logger.info("PostgreSQL database & extensions initialized successfully.")
+    try:
+        await init_db()
+        logger.info("PostgreSQL database & extensions initialized successfully.")
+    except Exception as e:
+        logger.error(f"Database initialization failed during startup: {e}")
     yield
     logger.info("Application shutdown completed.")
 
