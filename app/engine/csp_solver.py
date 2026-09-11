@@ -391,24 +391,21 @@ def solveCrossword(
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Production entry point for crossword level generation.
-    1. Primary: Exact Google OR-Tools CP-SAT solver for maximum intersections & layout optimality.
-    2. Fallback: Fast geometric freeform solver.
+    Currently defaulting to the greedy freeform solver to avoid OR-Tools memory overhead.
     """
-    # 1. Primary: Google OR-Tools CP-SAT
-    result = solveWithORTools(
-        candidateWords,
-        targetCount=targetCount,
-        gridSize=gridSize,
-        timeLimitSeconds=SOLVER_TIME_LIMIT_S,
-        maxCandidates=25
-    )
-    if result:
-        return result
+    # Temporarily bypassed OR-Tools to prevent OOM
+    # result = solveWithORTools(
+    #     candidateWords,
+    #     targetCount=targetCount,
+    #     gridSize=gridSize,
+    #     timeLimitSeconds=SOLVER_TIME_LIMIT_S,
+    #     maxCandidates=25
+    # )
+    # if result:
+    #     return result
 
-    # 2. Resilient Fallback
-    logger.info("OR-Tools did not find a layout within time limit, executing freeform fallback.")
+    logger.info("Using freeform solver directly to avoid OR-Tools memory overhead.")
     return solveFreeform(candidateWords, targetCount=targetCount, gridSize=gridSize, maxRetries=50)
-
 
 
 def calculateLayoutScore(placed: List[Dict[str, Any]]) -> float:
