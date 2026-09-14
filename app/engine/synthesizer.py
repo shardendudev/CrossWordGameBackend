@@ -258,7 +258,7 @@ async def generateLevelForUser(
             post_trivia = (m.awards_summary or m.iconic_dialogue or "Iconic cinema classic!") if m else ""
 
             # Extract individual word lengths from movie title (e.g. "The Batman" -> [3, 6], "(3,6)")
-            raw_title = (m.clean_title or m.title) if m else clean_word
+            raw_title = (m.title or m.clean_title) if m else clean_word
             matched_words = re.findall(r'[A-Za-z0-9]+', raw_title)
             if matched_words:
                 word_lengths = [len(w) for w in matched_words]
