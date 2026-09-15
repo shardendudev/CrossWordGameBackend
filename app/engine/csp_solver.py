@@ -22,11 +22,17 @@ def get_title_stem(title: str) -> str:
 
 # 1. Spatial Placement Rule Validator (used by greedy solver & bounds checker)
 
-def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, direction: str, size: int = 10) -> bool:
+def isValidFreeformPlacement(
+    grid: List[List[str]], word: str, r: int, c: int, direction: str,
+    size: int = 10,
+    occupied_directions: Optional[Dict[Tuple[int, int], Set[str]]] = None
+) -> bool:
     """
     Validates dynamic freeform word placement with strict End-Cap Buffers and Side-by-Side Adjacency rules.
     - End-Cap Buffer: Cells before start and after end MUST be empty.
     - Side-by-Side Buffer: Non-intersection side cells MUST be empty.
+    - Same-Direction Overlap: A cell already occupied by a word in the SAME direction is rejected.
+      Valid crossword intersections are always perpendicular.
     """
     length = len(word)
     
@@ -46,7 +52,7 @@ def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, d
         if r + length < size and grid[r + length][c] != "":
             return False
 
-    # 2. Cell Occupancy & Side Adjacency Checks
+    # 2. Cell Occupancy, Direction Overlap & Side Adjacency Checks
     for i, ch in enumerate(word):
         curr_r = r if direction == "ACROSS" else r + i
         curr_c = c + i if direction == "ACROSS" else c
@@ -54,6 +60,12 @@ def isValidFreeformPlacement(grid: List[List[str]], word: str, r: int, c: int, d
         
         if existing != "" and existing != ch:
             return False  # Letter mismatch
+
+        if existing != "":
+            # Cell has a matching letter. Reject if already claimed by the SAME direction —
+            # valid crossword intersections are always perpendicular.
+            if occupied_directions and direction in occupied_directions.get((curr_r, curr_c), set()):
+                return False
             
         if existing == "":
             if direction == "ACROSS":
@@ -300,6 +312,9 @@ def solveFreeform(
         placed = []
         placed_titles: Set[str] = set()
         placed_stems: Set[str] = set()
+        # Track which direction(s) own each cell to prevent same-direction overlaps.
+        # A cell can be owned by at most one ACROSS and one DOWN word (a perpendicular intersection).
+        occupied_dirs: Dict[Tuple[int, int], Set[str]] = {}
 
         seed_movie = shuffled[0]
         seed_word = seed_movie["clean_title"]
@@ -308,11 +323,12 @@ def solveFreeform(
         seed_r = 3
         seed_c = max(1, (gridSize - seed_len) // 2)
 
-        if not isValidFreeformPlacement(grid, seed_word, seed_r, seed_c, "ACROSS", gridSize):
+        if not isValidFreeformPlacement(grid, seed_word, seed_r, seed_c, "ACROSS", gridSize, occupied_dirs):
             continue
 
         for i, ch in enumerate(seed_word):
             grid[seed_r][seed_c + i] = ch
+            occupied_dirs.setdefault((seed_r, seed_c + i), set()).add("ACROSS")
         placed.append({
             "slot_id": "S1",
             "word": seed_word,
@@ -355,11 +371,12 @@ def solveFreeform(
                             new_r = cell_r if new_dir == "ACROSS" else cell_r - w_idx
                             new_c = cell_c - w_idx if new_dir == "ACROSS" else cell_c
 
-                            if isValidFreeformPlacement(grid, clean_word, new_r, new_c, new_dir, gridSize):
+                            if isValidFreeformPlacement(grid, clean_word, new_r, new_c, new_dir, gridSize, occupied_dirs):
                                 for idx, ch in enumerate(clean_word):
                                     gr = new_r if new_dir == "ACROSS" else new_r + idx
                                     gc = new_c + idx if new_dir == "ACROSS" else new_c
                                     grid[gr][gc] = ch
+                                    occupied_dirs.setdefault((gr, gc), set()).add(new_dir)
                                 
                                 placed.append({
                                     "slot_id": f"S{len(placed) + 1}",
