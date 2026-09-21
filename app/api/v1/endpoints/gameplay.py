@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
+
 from app.db.session import get_db
 from app.db.models.user import User
 from app.db.models.movie import Movie
@@ -34,6 +36,7 @@ router = APIRouter()
 @router.post("/generate-level", response_model=LevelResponse)
 async def generateLevel(
     payload: GenerateLevelRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> LevelResponse:
     """
@@ -42,20 +45,10 @@ async def generateLevel(
     """
     logger.info("Generating level for user '%s' with requested_difficulty=%s", payload.user_id, payload.requested_difficulty)
 
-    # Verify user exists
-    user_res = await db.execute(select(User).where(User.user_id == payload.user_id))
-    user = user_res.scalars().first()
-    if not user:
-        logger.warning("Failed to generate level: User '%s' not found.", payload.user_id)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID '{payload.user_id}' not found."
-        )
-
     # Enforce sequential level progression: user cannot generate a new level if they have an active uncompleted level
     active_level_res = await db.execute(
         select(UserGameplayTelemetry).where(
-            UserGameplayTelemetry.user_id == payload.user_id,
+            UserGameplayTelemetry.user_id == current_user.user_id,
             UserGameplayTelemetry.is_completed == False
         )
     )
@@ -68,14 +61,14 @@ async def generateLevel(
 
     level_response = await generateLevelForUser(
         db=db,
-        userId=payload.user_id,
+        userId=current_user.user_id,
         requestedDifficulty=payload.requested_difficulty,
         excludeImdbIds=payload.exclude_imdb_ids
     )
 
     # Record initial in-progress telemetry row to lock level progression until completed
     initial_telemetry = UserGameplayTelemetry(
-        user_id=payload.user_id,
+        user_id=current_user.user_id,
         level_id=level_response.level_id,
         level_number=level_response.level_number,
         time_taken_seconds=0,
@@ -109,20 +102,13 @@ FREE_HINTS_PER_LEVEL = 2
 @router.post("/request-hint", response_model=HintResponse)
 async def requestHint(
     payload: HintRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> HintResponse:
     """
     Requests the next progressive hint for a specific level slot.
     Deducts premium hint balance when level-wide free hint budget is exhausted.
     """
-    # Fetch User
-    user_res = await db.execute(select(User).where(User.user_id == payload.user_id))
-    user = user_res.scalars().first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID '{payload.user_id}' not found."
-        )
 
     # Fetch all Hint Cache entries for this level to calculate level-wide free hint usage
     cache_res = await db.execute(
@@ -155,18 +141,18 @@ async def requestHint(
 
     cost_charged = 0
     if cost > 0:
-        if user.premium_hints_balance < cost:
+        if current_user.premium_hints_balance < cost:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail="Insufficient premium hint balance."
             )
-        user.premium_hints_balance -= cost
+        current_user.premium_hints_balance -= cost
         cost_charged = cost
 
     hint_entry.revealed_up_to += 1
     try:
         await db.commit()
-        await db.refresh(user)
+        await db.refresh(current_user)
     except Exception:
         await db.rollback()
         logger.exception("Failed to process hint request")
@@ -187,7 +173,7 @@ async def requestHint(
         type=next_hint["type"],
         cost_charged=cost_charged,
         free_hints_remaining=free_hints_remaining,
-        premium_hints_remaining=user.premium_hints_balance,
+        premium_hints_remaining=current_user.premium_hints_balance,
         hints_left_for_slot=hints_left
     )
 
@@ -195,23 +181,17 @@ async def requestHint(
 @router.post("/submit-telemetry", response_model=TelemetryResponse)
 async def submitTelemetry(
     payload: SubmitTelemetryRequest,
+    current_user:User=Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> TelemetryResponse:
     """
     Submits game completion metrics, records session telemetry, and updates player skill rating & taste vector.
     """
-    user_res = await db.execute(select(User).where(User.user_id == payload.user_id))
-    user = user_res.scalars().first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID '{payload.user_id}' not found."
-        )
-
+    user = current_user
     # Prevent duplicate telemetry submissions for an already completed level
     existing_res = await db.execute(
         select(UserGameplayTelemetry).where(
-            UserGameplayTelemetry.user_id == payload.user_id,
+            UserGameplayTelemetry.user_id == current_user.user_id,
             UserGameplayTelemetry.level_id == payload.level_id
         )
     )
@@ -235,7 +215,7 @@ async def submitTelemetry(
         session_id = payload.session_id or uuid.uuid4()
         level_telemetry = UserGameplayTelemetry(
             session_id=session_id,
-            user_id=payload.user_id,
+            user_id=current_user.user_id,
             level_id=payload.level_id,
             level_number=payload.level_number,
             time_taken_seconds=payload.time_taken_seconds,
@@ -281,7 +261,7 @@ async def submitTelemetry(
             total_depth_sum += min(1.0, hints_rev / 5.0)
 
             movie_telemetry = UserMovieTelemetry(
-                user_id=payload.user_id,
+                user_id=current_user.user_id,
                 level_id=payload.level_id,
                 imdb_id=imdb_id,
                 hints_revealed=hints_rev,
@@ -333,7 +313,7 @@ async def submitTelemetry(
 
 
     return TelemetryResponse(
-        user_id=payload.user_id,
+        user_id=current_user.user_id,
         session_id=session_id,
         previous_skill_level=prev_skill,
         new_skill_level=new_skill,
@@ -341,29 +321,22 @@ async def submitTelemetry(
     )
 
 
-@router.get("/history/{user_id}", response_model=List[Dict[str, Any]])
+@router.get("/history", response_model=List[Dict[str, Any]])
 async def getUserHistory(
-    user_id: uuid.UUID,
     limit: int = 20,
     offset: int = 0,
+    current_user: User= Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Returns paginated level telemetry history for a user from Postgres."""
     # Verify user exists
-    user_res = await db.execute(select(User).where(User.user_id == user_id))
-    user = user_res.scalars().first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID '{user_id}' not found."
-        )
 
     safe_limit = min(100, max(1, limit))
     safe_offset = max(0, offset)
 
     history_res = await db.execute(
         select(UserGameplayTelemetry)
-        .where(UserGameplayTelemetry.user_id == user_id)
+        .where(UserGameplayTelemetry.user_id == current_user.user_id)
         .order_by(UserGameplayTelemetry.created_at.desc())
         .limit(safe_limit)
         .offset(safe_offset)

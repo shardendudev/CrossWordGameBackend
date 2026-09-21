@@ -9,8 +9,9 @@ from app.db.base import Base
 class User(Base):
     __tablename__="users"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String(128),unique=True, nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     current_skill_level: Mapped[float] = mapped_column(Float, default=0.200)
     total_games_played: Mapped[int] = mapped_column(Integer,default=0)
     levels_generated: Mapped[int] = mapped_column(Integer, default=0)

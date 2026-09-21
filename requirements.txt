@@ -4,6 +4,10 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 
+#google
+google-auth>=2.30.0
+requests>=2.31.0
+
 # Database & ORM
 sqlalchemy>=2.0.30
 asyncpg>=0.29.0

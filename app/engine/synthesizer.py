@@ -115,7 +115,7 @@ def build_hint_stack(
 
 async def generateLevelForUser(
     db: AsyncSession,
-    userId: uuid.UUID,
+    userId: str,
     requestedDifficulty: Optional[float] = None,
     excludeImdbIds: Optional[List[str]] = None
 ) -> LevelResponse:

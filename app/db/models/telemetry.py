@@ -11,7 +11,7 @@ class UserGameplayTelemetry(Base):
     __tablename__ = "user_gameplay_telemetry"
 
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), ForeignKey("users.user_id"), nullable=False, index=True)
     level_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     level_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
@@ -32,7 +32,7 @@ class UserMovieTelemetry(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), ForeignKey("users.user_id"), nullable=False, index=True)
     level_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     imdb_id: Mapped[str] = mapped_column(String(32), ForeignKey("movies.imdb_id"), nullable=False, index=True)
 
