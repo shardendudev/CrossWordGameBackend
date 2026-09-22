@@ -43,7 +43,7 @@ async def generateLevel(
     Generates a personalized, adaptive 6-movie 10x10 crossword level for a user.
     Excludes previously played movies and applies skill-adapted clue text.
     """
-    logger.info("Generating level for user '%s' with requested_difficulty=%s", payload.user_id, payload.requested_difficulty)
+    logger.info("Generating level for user '%s' with requested_difficulty=%s", current_user.user_id, payload.requested_difficulty)
 
     # Enforce sequential level progression: user cannot generate a new level if they have an active uncompleted level
     active_level_res = await db.execute(

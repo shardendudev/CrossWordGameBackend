@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 
 class GenerateLevelRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None
     requested_difficulty: Optional[float] = None
     exclude_imdb_ids: Optional[List[str]] = Field(default=None, max_length=500, description="Optional list of played IMDb IDs from client Dexie store to exclude from candidate selection")
 
@@ -42,7 +42,7 @@ class LevelResponse(BaseModel):
 
 
 class HintRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str]= None
     level_id: uuid.UUID
     slot_id: str = Field(..., max_length=32, pattern=r'^S\d+$')
 
@@ -66,7 +66,7 @@ class MovieHintUsage(BaseModel):
 
 
 class SubmitTelemetryRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None
     session_id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4)
     level_id: uuid.UUID
     level_number: Optional[int] = Field(default=None, description="Sequential level number assigned at generation")
