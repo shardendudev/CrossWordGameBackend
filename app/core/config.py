@@ -10,7 +10,8 @@ class Settings(BaseSettings):
 
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-m3"
     ALLOWED_ORIGINS: str = "*"
-    FIREBASE_PROJECT_ID:str = ""
+    FIREBASE_PROJECT_ID: str = ""
+    FIREBASE_CREDENTIALS_PATH: str = ""
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:

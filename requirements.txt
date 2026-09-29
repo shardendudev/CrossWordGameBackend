@@ -6,6 +6,7 @@ pydantic-settings>=2.3.0
 
 #google
 google-auth>=2.30.0
+firebase-admin>=7.0.0
 requests>=2.31.0
 
 # Database & ORM

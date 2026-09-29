@@ -2,12 +2,14 @@ import logging
 import random
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.models.user import User
-from app.core.auth import get_current_user,get_current_token_claims
+from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
+from app.core.auth import get_current_user, get_current_token_claims
+from app.core.firebase import delete_firebase_user
 from app.schemas.user import UserCreate, UserUpdate, UserResponse
 
 logger = logging.getLogger(__name__)
@@ -150,4 +152,48 @@ async def getUserProfile(
             detail=f"User with ID '{user_id}' not found."
         )
     return user
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def deleteAccount(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Permanently deletes the current user's profile and related telemetry data from Postgres,
+    and removes the user from Firebase Authentication via Firebase Admin SDK.
+    If Firebase deletion fails, the Postgres transaction is rolled back.
+    """
+    user_id = current_user.user_id
+    logger.info("Initiating account deletion for user '%s' (%s)", current_user.username, user_id)
+
+    try:
+        # 1. Delete dependent telemetry records
+        await db.execute(
+            delete(UserMovieTelemetry).where(UserMovieTelemetry.user_id == user_id)
+        )
+        await db.execute(
+            delete(UserGameplayTelemetry).where(UserGameplayTelemetry.user_id == user_id)
+        )
+
+        # 2. Delete user profile record
+        await db.delete(current_user)
+        await db.flush()
+
+        # 3. Delete user from Firebase Auth via Admin SDK
+        delete_firebase_user(user_id)
+
+        # 4. Commit Postgres transaction once Firebase deletion succeeds
+        await db.commit()
+        logger.info("Successfully deleted user '%s' (%s) from Postgres and Firebase", current_user.username, user_id)
+
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("Failed to delete user account '%s': %s", user_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete user account: {str(exc)}"
+        )
 
