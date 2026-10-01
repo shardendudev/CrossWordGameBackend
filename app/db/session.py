@@ -40,7 +40,12 @@ async def init_db():
         await conn.execute(text('ALTER TABLE level_hint_cache ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();'))
         await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS levels_generated INTEGER DEFAULT 0;'))
         await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);'))
+        await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS played_imdb_ids VARCHAR(32)[] DEFAULT \'{}\'::VARCHAR(32)[];'))
+        await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();'))
+        await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();'))
         await conn.execute(text('ALTER TABLE user_gameplay_telemetry ADD COLUMN IF NOT EXISTS level_number INTEGER;'))
         await conn.execute(text('ALTER TABLE user_gameplay_telemetry ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();'))
+        await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_active_level ON gameplay_levels (user_id) WHERE is_completed = FALSE;'))
+        await conn.execute(text('CREATE INDEX IF NOT EXISTS idx_gameplay_user_history ON gameplay_levels (user_id, created_at DESC);'))
         await conn.execute(text('CREATE INDEX IF NOT EXISTS idx_movies_semantic_embedding_hnsw '
                                 'ON movies USING hnsw (semantic_embedding vector_cosine_ops);'))
