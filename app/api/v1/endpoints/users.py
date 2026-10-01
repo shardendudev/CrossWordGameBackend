@@ -6,6 +6,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.db.models.hint_cache import LevelHintCache
 from app.db.models.user import User
 from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
 from app.core.auth import get_current_user, get_current_token_claims
@@ -167,7 +168,15 @@ async def deleteAccount(
     logger.info("Initiating account deletion for user '%s' (%s)", current_user.username, user_id)
 
     try:
-        # 1. Delete dependent telemetry records
+
+        # Find all level_ids played by this user
+        user_levels = select(UserGameplayTelemetry.level_id).where(UserGameplayTelemetry.user_id == user_id);
+
+        #delete hint cache for those levels
+        await db.execute(
+            delete(LevelHintCache).where(LevelHintCache.level_id.in_(user_levels))
+        )
+        # Delete dependent telemetry records
         await db.execute(
             delete(UserMovieTelemetry).where(UserMovieTelemetry.user_id == user_id)
         )
@@ -175,14 +184,14 @@ async def deleteAccount(
             delete(UserGameplayTelemetry).where(UserGameplayTelemetry.user_id == user_id)
         )
 
-        # 2. Delete user profile record
+        # Delete user profile record
         await db.delete(current_user)
         await db.flush()
 
-        # 3. Delete user from Firebase Auth via Admin SDK
+        # Delete user from Firebase Auth via Admin SDK
         delete_firebase_user(user_id)
 
-        # 4. Commit Postgres transaction once Firebase deletion succeeds
+        # Commit Postgres transaction once Firebase deletion succeeds
         await db.commit()
         logger.info("Successfully deleted user '%s' (%s) from Postgres and Firebase", current_user.username, user_id)
 

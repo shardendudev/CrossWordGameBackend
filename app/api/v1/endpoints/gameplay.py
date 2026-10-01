@@ -15,6 +15,7 @@ from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
 from app.db.models.hint_cache import LevelHintCache
 from app.schemas.gameplay import (
     GenerateLevelRequest,
+    GenerateLevelExperimentalRequest,
     LevelResponse,
     HintRequest,
     HintResponse,
@@ -22,7 +23,7 @@ from app.schemas.gameplay import (
     TelemetryResponse,
     LevelHistoryItem,
 )
-from app.engine.synthesizer import generateLevelForUser
+from app.engine.synthesizer import (generateLevelForUser, generateExperimentalLevelForUser)
 from app.engine.difficulty import (
     calculatePerformanceRatio,
     updateUserSkill,
@@ -94,6 +95,71 @@ async def generateLevel(
 
     return level_response
 
+
+
+@router.post("/generate-level-experimental", response_model=LevelResponse)
+async def generateLevelExperimental(
+    payload: GenerateLevelExperimentalRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> LevelResponse:
+    """
+    Experimental endpoint for dynamic non-square grids (default 12x10),
+    vertical-only placement for titles > cols, and dynamic word counts.
+    """
+    logger.info(
+        "Generating EXPERIMENTAL level for user '%s' (%dx%d, target_movies=%d)",
+        current_user.user_id, payload.rows, payload.cols, payload.target_movies
+    )
+
+    # Enforce sequential level progression (same as production)
+    active_level_res = await db.execute(
+        select(UserGameplayTelemetry).where(
+            UserGameplayTelemetry.user_id == current_user.user_id,
+            UserGameplayTelemetry.is_completed == False
+        )
+    )
+    active_level = active_level_res.scalars().first()
+    if active_level:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You must complete level {active_level.level_number or ''} before generating a new level."
+        )
+
+    level_response = await generateExperimentalLevelForUser(
+        db=db,
+        userId=current_user.user_id,
+        requestedDifficulty=payload.requested_difficulty,
+        excludeImdbIds=payload.exclude_imdb_ids,
+        rows=payload.rows,
+        cols=payload.cols,
+        targetCount=payload.target_movies
+    )
+
+    # Record initial in-progress telemetry row to lock level progression until completed
+    initial_telemetry = UserGameplayTelemetry(
+        user_id=current_user.user_id,
+        level_id=level_response.level_id,
+        level_number=level_response.level_number,
+        time_taken_seconds=0,
+        free_hints_used=0,
+        premium_hints_used=0,
+        cell_error_count=0,
+        is_completed=False
+    )
+    db.add(initial_telemetry)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to save generated level hints")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred while saving generated level hints."
+        )
+
+
+    return level_response
 
 
 FREE_HINTS_PER_LEVEL = 2
@@ -241,6 +307,10 @@ async def submitTelemetry(
         imdb_ids = [u.imdb_id for u in payload.hint_usage]
 
 
+    usage_map = {
+        u.imdb_id: {"hints_revealed":u.hints_revealed, "deepest_tier":u.deepest_tier}
+        for u in (payload.hint_usage or [])
+    }
     total_depth_sum = 0.0
     if imdb_ids:
         for imdb_id in imdb_ids:

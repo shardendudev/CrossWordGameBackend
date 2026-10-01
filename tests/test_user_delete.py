@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.main import app
 from app.db.models.user import User
 from app.db.models.telemetry import UserGameplayTelemetry
+from app.db.models.hint_cache import LevelHintCache
 from app.core.auth import get_current_user
 from app.api.v1.endpoints.users import deleteAccount
 
@@ -68,14 +69,22 @@ async def test_delete_account_e2e_postgres(async_client: AsyncClient, db_session
     db_session.add(test_user)
     await db_session.flush()
 
+    test_level_id = uuid.uuid4()
     test_telemetry = UserGameplayTelemetry(
         session_id=uuid.uuid4(),
         user_id=test_uid,
-        level_id=uuid.uuid4(),
+        level_id=test_level_id,
         time_taken_seconds=42,
         is_completed=True
     )
     db_session.add(test_telemetry)
+
+    test_hint = LevelHintCache(
+        level_id=test_level_id,
+        slot_id="1-across",
+        hint_stack=[{"tier": 1, "text": "test clue"}]
+    )
+    db_session.add(test_hint)
     await db_session.flush()
 
     # Verify rows exist
@@ -84,6 +93,9 @@ async def test_delete_account_e2e_postgres(async_client: AsyncClient, db_session
 
     res_telem = await db_session.execute(select(UserGameplayTelemetry).where(UserGameplayTelemetry.user_id == test_uid))
     assert res_telem.scalars().first() is not None
+
+    res_hint = await db_session.execute(select(LevelHintCache).where(LevelHintCache.level_id == test_level_id))
+    assert res_hint.scalars().first() is not None
 
     # Override get_current_user dependency to return our test user
     app.dependency_overrides[get_current_user] = lambda: test_user
@@ -100,5 +112,8 @@ async def test_delete_account_e2e_postgres(async_client: AsyncClient, db_session
 
             verify_telem = await db_session.execute(select(UserGameplayTelemetry).where(UserGameplayTelemetry.user_id == test_uid))
             assert verify_telem.scalars().first() is None
+
+            verify_hint = await db_session.execute(select(LevelHintCache).where(LevelHintCache.level_id == test_level_id))
+            assert verify_hint.scalars().first() is None
     finally:
         app.dependency_overrides.pop(get_current_user, None)

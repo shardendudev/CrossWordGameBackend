@@ -8,6 +8,17 @@ class GenerateLevelRequest(BaseModel):
     requested_difficulty: Optional[float] = None
     exclude_imdb_ids: Optional[List[str]] = Field(default=None, max_length=500, description="Optional list of played IMDb IDs from client Dexie store to exclude from candidate selection")
 
+class GenerateLevelExperimentalRequest(BaseModel):
+    user_id: Optional[str] = None
+    requested_difficulty: Optional[float] = None
+    exclude_imdb_ids: Optional[List[str]] = Field(
+        default=None,
+        max_length=500,
+        description="Optional list of played IMDb IDs from client Dexie store to exclude from candidate selection"
+    )
+    rows: int = Field(default=12, ge=6, le=20, description="Grid row count (height)")
+    cols: int = Field(default=10, ge=6, le=20, description="Grid col count (width)")
+    target_movies: int = Field(default=6, ge=4, le=10, description="Number of words in puzzle")
 
 
 class ClueItem(BaseModel):
@@ -103,3 +114,5 @@ class LevelHistoryItem(BaseModel):
     time_taken_seconds: Optional[int] = None
     created_at: str
     completed_at: Optional[str] = None
+
+
