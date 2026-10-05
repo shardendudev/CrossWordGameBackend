@@ -45,7 +45,7 @@ async def generateLevelForUser(
     db: AsyncSession,
     userId: str,
     requestedDifficulty: Optional[float] = None,
-    excludeImdbIds: Optional[List[str]] = None,
+    excludeImdbIds: Optional[List[str]] = None, #deprecated Dexie js movie list
     rows: int = 10,
     cols: int = 10,
     targetCount: int = 6
@@ -91,7 +91,7 @@ async def generateLevelForUser(
     if taste_vector is not None:
         candidates = await recommendMoviesByTaste(db, tasteVector=taste_vector, targetDifficulty= target_diff, limit=300, margin=0.35)
         mode_used = "Taste-Vector (pgvector)"
-
+                                           
     else:
         candidates = await fetchCandidateMovies(db, targetDifficulty=target_diff, limit=300, margin=0.35)
         mode_used= "Cold start (IMDB votes)"
