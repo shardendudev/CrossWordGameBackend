@@ -11,12 +11,19 @@ This script:
 4. Keeps existing legacy tables untouched for safe zero-downtime transition.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root directory to sys.path so 'app' can be imported directly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import asyncio
 import logging
 from sqlalchemy import text
 from app.db.session import engine
 from app.db.base import Base
 import app.db.models
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("migration_v2")

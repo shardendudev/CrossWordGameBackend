@@ -26,8 +26,8 @@ async def test_user_creation_and_profile(async_client: AsyncClient):
 
     user_id = user_data["user_id"]
 
-    # 2. Get Profile
-    get_res = await async_client.get(f"/api/v1/users/{user_id}")
+    # 2. Get Profile via /me endpoint
+    get_res = await async_client.get("/api/v1/users/me", params={"user_id": user_id})
     assert get_res.status_code == 200
     profile_data = get_res.json()
     assert profile_data["user_id"] == user_id
@@ -54,15 +54,11 @@ async def test_generate_level_api(async_client: AsyncClient):
     assert level_data["free_hints_remaining"] == 2
     assert level_data["premium_hints_remaining"] == 5
     assert len(level_data["clues"]) == 6
-    # Verify word_lengths and word_pattern are generated for clues
+    # Verify word_lengths and word_pattern are generated for clues, and imdb_id is NOT leaked
     for clue in level_data["clues"]:
         assert "word_lengths" in clue and isinstance(clue["word_lengths"], list)
         assert "word_pattern" in clue and clue["word_pattern"].startswith("(") and clue["word_pattern"].endswith(")")
-    
-    # Ensure excluded movies are not present in generated clues
-    generated_imdb_ids = [c["imdb_id"] for c in level_data["clues"]]
-    assert "tt0114709" not in generated_imdb_ids
-    assert "tt0120338" not in generated_imdb_ids
+        assert "imdb_id" not in clue
 
 
 async def test_level_progression_lock(async_client: AsyncClient):
@@ -169,18 +165,13 @@ async def test_get_user_history_api(async_client: AsyncClient):
     assert sub_res.status_code == 200
 
     # 3. Verify level completion status in Postgres history endpoint
-    updated_hist = await async_client.get(f"/api/v1/gameplay/history/{user_id}")
+    updated_hist = await async_client.get("/api/v1/gameplay/history", params={"user_id": user_id})
     assert updated_hist.status_code == 200
     data = updated_hist.json()
     assert len(data) >= 1
     assert data[0]["level_id"] == level_id
     assert data[0]["status"] == "completed"
     assert data[0]["time_taken_seconds"] == 48
-
-    # 4. Verify non-existent user returns 404
-    fake_id = str(uuid.uuid4())
-    missing_res = await async_client.get(f"/api/v1/gameplay/history/{fake_id}")
-    assert missing_res.status_code == 404
 
 
 

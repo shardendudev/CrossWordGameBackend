@@ -6,19 +6,16 @@ from pydantic import BaseModel, Field, ConfigDict
 class GenerateLevelRequest(BaseModel):
     user_id: Optional[str] = None
     requested_difficulty: Optional[float] = None
-    exclude_imdb_ids: Optional[List[str]] = Field(default=None, max_length=500, description="Optional list of played IMDb IDs from client Dexie store to exclude from candidate selection")
-
-class GenerateLevelExperimentalRequest(BaseModel):
-    user_id: Optional[str] = None
-    requested_difficulty: Optional[float] = None
     exclude_imdb_ids: Optional[List[str]] = Field(
         default=None,
         max_length=500,
         description="Optional list of played IMDb IDs from client Dexie store to exclude from candidate selection"
     )
-    rows: int = Field(default=12, ge=6, le=20, description="Grid row count (height)")
+    rows: int = Field(default=10, ge=6, le=20, description="Grid row count (height)")
     cols: int = Field(default=10, ge=6, le=20, description="Grid col count (width)")
     target_movies: int = Field(default=6, ge=4, le=10, description="Number of words in puzzle")
+
+GenerateLevelExperimentalRequest = GenerateLevelRequest
 
 
 class ClueItem(BaseModel):
@@ -30,14 +27,13 @@ class ClueItem(BaseModel):
     length: int
     word_lengths: Optional[List[int]] = Field(default=None, description="Lengths of individual words in movie title, e.g. [3, 6]")
     word_pattern: Optional[str] = Field(default=None, description="Formatted word lengths pattern, e.g. '(3,6)'")
-    imdb_id: Optional[str] = None
-    display_title: str
+    display_title: Optional[str] = None
     difficulty: Optional[float] = None
     hint: str
     hint_tier: int
     hint_type: str
     hints_available: int
-    post_solve_trivia: str
+    post_solve_trivia: Optional[str] = None
 
 
 
@@ -46,9 +42,10 @@ class LevelResponse(BaseModel):
     level_id: uuid.UUID
     level_number: int
     target_difficulty: float
+    session_salt: str = Field(default="", description="Crypto salt for client-side keystroke hashing")
     free_hints_remaining: int = 2
     premium_hints_remaining: int = 5
-    grid: List[List[str]]
+    grid: List[List[Optional[str]]]
     clues: List[ClueItem]
 
 

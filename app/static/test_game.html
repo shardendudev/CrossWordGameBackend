@@ -134,7 +134,7 @@
     }
 
     async function refreshUserProfile() {
-      const res = await fetch(`/api/v1/users/${currentUserId}`);
+      const res = await fetch("/api/v1/users/me");
       if (res.ok) {
         const user = await res.json();
         document.getElementById("user-display").innerText = `User: ${user.username} (${user.user_id.substring(0, 8)}...)`;
@@ -380,7 +380,7 @@
     }
 
     async function loadHistory() {
-      const res = await fetch(`/api/v1/gameplay/history/${currentUserId}?limit=10`);
+      const res = await fetch("/api/v1/gameplay/history?limit=10");
       if (res.ok) {
         const history = await res.json();
         const list = document.getElementById("history-list");

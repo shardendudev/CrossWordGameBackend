@@ -6,9 +6,8 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models.hint_cache import LevelHintCache
 from app.db.models.user import User
-from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
+from app.db.models.gameplay import GameplayLevel
 from app.core.auth import get_current_user, get_current_token_claims
 from app.core.firebase import delete_firebase_user
 from app.schemas.user import UserCreate, UserUpdate, UserResponse
@@ -79,24 +78,6 @@ async def createUser(
 
 
 
-@router.get("/by-username/{username}", response_model=UserResponse)
-async def getUserByUsername(
-    username: str,
-    db: AsyncSession = Depends(get_db)
-) -> UserResponse:
-    """
-    Fetches player profile details by username.
-    """
-    result = await db.execute(select(User).where(User.username == username))
-    user = result.scalars().first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with username '{username}' not found."
-        )
-    return user
-
-
 @router.get("/me",response_model=UserResponse)
 async def getMyProfile(
     current_user: User = Depends(get_current_user),
@@ -137,23 +118,6 @@ async def updateMyProfile(
     await db.refresh(current_user)
     return current_user
 
-@router.get("/{user_id}", response_model=UserResponse)
-async def getUserProfile(
-    user_id: str,
-    db: AsyncSession = Depends(get_db)
-) -> UserResponse:
-    """
-    Fetches player profile details by UUID.
-    """
-    result = await db.execute(select(User).where(User.user_id == user_id))
-    user = result.scalars().first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with ID '{user_id}' not found."
-        )
-    return user
-
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def deleteAccount(
     current_user: User = Depends(get_current_user),
@@ -168,23 +132,7 @@ async def deleteAccount(
     logger.info("Initiating account deletion for user '%s' (%s)", current_user.username, user_id)
 
     try:
-
-        # Find all level_ids played by this user
-        user_levels = select(UserGameplayTelemetry.level_id).where(UserGameplayTelemetry.user_id == user_id);
-
-        #delete hint cache for those levels
-        await db.execute(
-            delete(LevelHintCache).where(LevelHintCache.level_id.in_(user_levels))
-        )
-        # Delete dependent telemetry records
-        await db.execute(
-            delete(UserMovieTelemetry).where(UserMovieTelemetry.user_id == user_id)
-        )
-        await db.execute(
-            delete(UserGameplayTelemetry).where(UserGameplayTelemetry.user_id == user_id)
-        )
-
-        # Delete user profile record
+        # Delete user profile record (ON DELETE CASCADE in Postgres automatically cascades to gameplay_levels)
         await db.delete(current_user)
         await db.flush()
 

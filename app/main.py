@@ -26,7 +26,8 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info("PostgreSQL database & extensions initialized successfully.")
     except Exception as e:
-        logger.error(f"Database initialization failed during startup: {e}")
+        logger.error(f"Database initialization failed during startup. Aborting server launch.",exc_info=True)
+        raise  # stop FastAPI startup immediately
     yield
     logger.info("Application shutdown completed.")
 

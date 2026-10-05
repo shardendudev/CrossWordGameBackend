@@ -3,7 +3,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
@@ -11,8 +12,7 @@ from app.core.auth import get_current_user
 from app.db.session import get_db
 from app.db.models.user import User
 from app.db.models.movie import Movie
-from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
-from app.db.models.hint_cache import LevelHintCache
+from app.db.models.gameplay import GameplayLevel
 from app.schemas.gameplay import (
     GenerateLevelRequest,
     GenerateLevelExperimentalRequest,
@@ -41,16 +41,17 @@ async def generateLevel(
     db: AsyncSession = Depends(get_db)
 ) -> LevelResponse:
     """
-    Generates a personalized, adaptive 6-movie 10x10 crossword level for a user.
+    Generates a personalized, adaptive crossword level for a user (default 10x10, 6 movies).
     Excludes previously played movies and applies skill-adapted clue text.
     """
-    logger.info("Generating level for user '%s' with requested_difficulty=%s", current_user.user_id, payload.requested_difficulty)
+    logger.info("Generating level for user '%s' (%dx%d, target_movies=%d) with requested_difficulty=%s",
+                current_user.user_id, payload.rows, payload.cols, payload.target_movies, payload.requested_difficulty)
 
     # Enforce sequential level progression: user cannot generate a new level if they have an active uncompleted level
     active_level_res = await db.execute(
-        select(UserGameplayTelemetry).where(
-            UserGameplayTelemetry.user_id == current_user.user_id,
-            UserGameplayTelemetry.is_completed == False
+        select(GameplayLevel).where(
+            GameplayLevel.user_id == current_user.user_id,
+            GameplayLevel.is_completed == False
         )
     )
     active_level = active_level_res.scalars().first()
@@ -64,91 +65,16 @@ async def generateLevel(
         db=db,
         userId=current_user.user_id,
         requestedDifficulty=payload.requested_difficulty,
-        excludeImdbIds=payload.exclude_imdb_ids
-    )
-
-    # Record initial in-progress telemetry row to lock level progression until completed
-    initial_telemetry = UserGameplayTelemetry(
-        user_id=current_user.user_id,
-        level_id=level_response.level_id,
-        level_number=level_response.level_number,
-        time_taken_seconds=0,
-        free_hints_used=0,
-        premium_hints_used=0,
-        cell_error_count=0,
-        is_completed=False
-    )
-    db.add(initial_telemetry)
-
-    logger.info("Level '%s' generated successfully with %d clues.", level_response.level_id, len(level_response.clues))
-
-    try:
-        # Commit Postgres (LevelHintCache & initial UserGameplayTelemetry rows)
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        logger.exception("Failed to save generated level hints")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An internal error occurred while saving generated level hints."
-        )
-
-    return level_response
-
-
-
-@router.post("/generate-level-experimental", response_model=LevelResponse)
-async def generateLevelExperimental(
-    payload: GenerateLevelExperimentalRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-) -> LevelResponse:
-    """
-    Experimental endpoint for dynamic non-square grids (default 12x10),
-    vertical-only placement for titles > cols, and dynamic word counts.
-    """
-    logger.info(
-        "Generating EXPERIMENTAL level for user '%s' (%dx%d, target_movies=%d)",
-        current_user.user_id, payload.rows, payload.cols, payload.target_movies
-    )
-
-    # Enforce sequential level progression (same as production)
-    active_level_res = await db.execute(
-        select(UserGameplayTelemetry).where(
-            UserGameplayTelemetry.user_id == current_user.user_id,
-            UserGameplayTelemetry.is_completed == False
-        )
-    )
-    active_level = active_level_res.scalars().first()
-    if active_level:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"You must complete level {active_level.level_number or ''} before generating a new level."
-        )
-
-    level_response = await generateExperimentalLevelForUser(
-        db=db,
-        userId=current_user.user_id,
-        requestedDifficulty=payload.requested_difficulty,
         excludeImdbIds=payload.exclude_imdb_ids,
         rows=payload.rows,
         cols=payload.cols,
         targetCount=payload.target_movies
     )
 
-    # Record initial in-progress telemetry row to lock level progression until completed
-    initial_telemetry = UserGameplayTelemetry(
-        user_id=current_user.user_id,
-        level_id=level_response.level_id,
-        level_number=level_response.level_number,
-        time_taken_seconds=0,
-        free_hints_used=0,
-        premium_hints_used=0,
-        cell_error_count=0,
-        is_completed=False
-    )
-    db.add(initial_telemetry)
+    logger.info("Level '%s' generated successfully with %d clues.", level_response.level_id, len(level_response.clues))
+
     try:
+        # Commit Postgres (Single GameplayLevel row created in generator)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -158,8 +84,11 @@ async def generateLevelExperimental(
             detail="An internal error occurred while saving generated level hints."
         )
 
-
     return level_response
+
+
+# Alias for backward compatibility
+generateLevelExperimental = generateLevel
 
 
 FREE_HINTS_PER_LEVEL = 2
@@ -176,20 +105,23 @@ async def requestHint(
     Deducts premium hint balance when level-wide free hint budget is exhausted.
     """
 
-    # Fetch all Hint Cache entries for this level to calculate level-wide free hint usage
-    cache_res = await db.execute(
-        select(LevelHintCache).where(LevelHintCache.level_id == payload.level_id)
+    # Fetch GameplayLevel row (enforce ownership)
+    level_res = await db.execute(
+        select(GameplayLevel).where(
+            GameplayLevel.level_id == payload.level_id,
+            GameplayLevel.user_id == current_user.user_id
+        )
     )
-    all_entries = cache_res.scalars().all()
-    hint_entry = next((entry for entry in all_entries if entry.slot_id == payload.slot_id), None)
-    if not hint_entry:
+    level = level_res.scalars().first()
+    if not level or not level.hints_data or payload.slot_id not in level.hints_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Hint data for the requested level and slot not found."
         )
 
-    stack = hint_entry.hint_stack
-    revealed_count = hint_entry.revealed_up_to
+    slot_data = level.hints_data[payload.slot_id]
+    stack = slot_data.get("hint_stack", [])
+    revealed_count = slot_data.get("revealed_up_to", 1)
 
     if revealed_count >= len(stack):
         raise HTTPException(
@@ -200,7 +132,10 @@ async def requestHint(
     next_hint = stack[revealed_count]
 
     # Calculate total extra hints revealed across ALL slots in this level so far
-    total_extra_hints_used = sum(max(0, entry.revealed_up_to - 1) for entry in all_entries)
+    total_extra_hints_used = sum(
+        max(0, s.get("revealed_up_to", 1) - 1)
+        for s in level.hints_data.values()
+    )
 
     # Charge premium token only when level-wide free hint budget is exhausted
     cost = 0 if total_extra_hints_used < FREE_HINTS_PER_LEVEL else 1
@@ -215,7 +150,9 @@ async def requestHint(
         current_user.premium_hints_balance -= cost
         cost_charged = cost
 
-    hint_entry.revealed_up_to += 1
+    slot_data["revealed_up_to"] = revealed_count + 1
+    flag_modified(level, "hints_data")
+
     try:
         await db.commit()
         await db.refresh(current_user)
@@ -227,7 +164,7 @@ async def requestHint(
             detail="Failed to process hint request."
         )
 
-    hints_left = len(stack) - hint_entry.revealed_up_to
+    hints_left = len(stack) - slot_data["revealed_up_to"]
     total_extra_hints_after = total_extra_hints_used + 1
     free_hints_remaining = max(0, FREE_HINTS_PER_LEVEL - total_extra_hints_after)
 
@@ -247,97 +184,81 @@ async def requestHint(
 @router.post("/submit-telemetry", response_model=TelemetryResponse)
 async def submitTelemetry(
     payload: SubmitTelemetryRequest,
-    current_user:User=Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> TelemetryResponse:
     """
     Submits game completion metrics, records session telemetry, and updates player skill rating & taste vector.
     """
     user = current_user
-    # Prevent duplicate telemetry submissions for an already completed level
-    existing_res = await db.execute(
-        select(UserGameplayTelemetry).where(
-            UserGameplayTelemetry.user_id == current_user.user_id,
-            UserGameplayTelemetry.level_id == payload.level_id
+
+    # 1. Fetch existing GameplayLevel
+    level_res = await db.execute(
+        select(GameplayLevel).where(
+            GameplayLevel.user_id == current_user.user_id,
+            GameplayLevel.level_id == payload.level_id
         )
     )
-    existing_telemetry = existing_res.scalars().first()
-    if existing_telemetry:
-        if existing_telemetry.is_completed:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Telemetry already submitted for this level."
-            )
-        # Update existing in-progress telemetry row to completed status
-        existing_telemetry.time_taken_seconds = payload.time_taken_seconds
-        existing_telemetry.free_hints_used = payload.free_hints_used
-        existing_telemetry.premium_hints_used = payload.premium_hints_used
-        existing_telemetry.cell_error_count = payload.cell_error_count
-        existing_telemetry.is_completed = payload.is_completed
-        if payload.session_id:
-            existing_telemetry.session_id = payload.session_id
-        session_id = existing_telemetry.session_id
-    else:
-        session_id = payload.session_id or uuid.uuid4()
-        level_telemetry = UserGameplayTelemetry(
-            session_id=session_id,
-            user_id=current_user.user_id,
-            level_id=payload.level_id,
-            level_number=payload.level_number,
-            time_taken_seconds=payload.time_taken_seconds,
-            free_hints_used=payload.free_hints_used,
-            premium_hints_used=payload.premium_hints_used,
-            cell_error_count=payload.cell_error_count,
-            is_completed=payload.is_completed
+    level = level_res.scalars().first()
+    if not level:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Level session not found."
         )
-        db.add(level_telemetry)
 
-    # 2. Per-movie detail rows — read hint state & movies from server-side LevelHintCache
-    cache_res = await db.execute(
-        select(LevelHintCache).where(LevelHintCache.level_id == payload.level_id)
-    )
-    hint_caches = cache_res.scalars().all()
-    cache_by_imdb = {hc.imdb_id: hc for hc in hint_caches if hc.imdb_id}
+    if level.is_completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Telemetry already submitted for this level."
+        )
 
-    # Automatically resolve imdb_ids from LevelHintCache or client payload
-    imdb_ids = list(cache_by_imdb.keys())
+    session_id = payload.session_id or level.level_id
+
+    # Update level completion telemetry
+    level.time_taken_seconds = payload.time_taken_seconds
+    level.free_hints_used = payload.free_hints_used
+    level.premium_hints_used = payload.premium_hints_used
+    level.cell_error_count = payload.cell_error_count
+    level.is_completed = payload.is_completed
+    level.completed_at = func.now()
+
+    # 2. Extract per-movie solve metrics from level.hints_data
+    movie_telem_list = []
+    imdb_ids = []
+    total_depth_sum = 0.0
+
+    hints_data = level.hints_data or {}
+    for slot_id, slot_info in hints_data.items():
+        imdb_id = slot_info.get("imdb_id")
+        if not imdb_id:
+            continue
+        imdb_ids.append(imdb_id)
+        revealed_up_to = slot_info.get("revealed_up_to", 1)
+        hints_rev = max(0, revealed_up_to - 1)
+        stack = slot_info.get("hint_stack", [])
+        if revealed_up_to > 1 and stack:
+            deepest_tier = stack[min(revealed_up_to - 1, len(stack) - 1)].get("tier", 0)
+        else:
+            deepest_tier = 0
+
+        total_depth_sum += min(1.0, hints_rev / 5.0)
+        movie_telem_list.append({
+            "imdb_id": imdb_id,
+            "hints_revealed": hints_rev,
+            "deepest_hint_tier": deepest_tier
+        })
+
+    # Fallback to payload imdb_ids if hints_data has none
     if not imdb_ids and payload.imdb_ids:
         imdb_ids = payload.imdb_ids
-    elif not imdb_ids and payload.hint_usage:
-        imdb_ids = [u.imdb_id for u in payload.hint_usage]
 
+    level.movie_telemetry = movie_telem_list
+    flag_modified(level, "movie_telemetry")
 
-    usage_map = {
-        u.imdb_id: {"hints_revealed":u.hints_revealed, "deepest_tier":u.deepest_tier}
-        for u in (payload.hint_usage or [])
-    }
-    total_depth_sum = 0.0
+    # Append to user.played_imdb_ids for fast future deduplication
     if imdb_ids:
-        for imdb_id in imdb_ids:
-            hc = cache_by_imdb.get(imdb_id)
-            if hc:
-                # extra hints beyond the initial (initial is pre-revealed at index 0, revealed_up_to starts at 1)
-                hints_rev = max(0, hc.revealed_up_to - 1)
-                # Only record hint depth if player explicitly requested at least one additional hint
-                if hc.revealed_up_to > 1 and hc.hint_stack:
-                    deepest_tier = hc.hint_stack[hc.revealed_up_to - 1]["tier"]
-                else:
-                    deepest_tier = 0
-            else:
-                u = usage_map.get(imdb_id, {})
-                hints_rev = u.get("hints_revealed", 0)
-                deepest_tier = u.get("deepest_tier", 0)
-
-            total_depth_sum += min(1.0, hints_rev / 5.0)
-
-            movie_telemetry = UserMovieTelemetry(
-                user_id=current_user.user_id,
-                level_id=payload.level_id,
-                imdb_id=imdb_id,
-                hints_revealed=hints_rev,
-                deepest_hint_tier=deepest_tier
-            )
-            db.add(movie_telemetry)
+        existing_played = set(user.played_imdb_ids or [])
+        user.played_imdb_ids = list(existing_played.union(imdb_ids))
 
     # Compute average hint depth (0.0 to 1.0)
     avg_hint_depth = (total_depth_sum / len(imdb_ids)) if imdb_ids else 0.0
@@ -381,7 +302,6 @@ async def submitTelemetry(
             detail="An internal error occurred while recording level completion telemetry."
         )
 
-
     return TelemetryResponse(
         user_id=current_user.user_id,
         session_id=session_id,
@@ -395,26 +315,27 @@ async def submitTelemetry(
 async def getUserHistory(
     limit: int = 20,
     offset: int = 0,
-    current_user: User= Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Returns paginated level telemetry history for a user from Postgres."""
-    # Verify user exists
-
     safe_limit = min(100, max(1, limit))
     safe_offset = max(0, offset)
 
     history_res = await db.execute(
-        select(UserGameplayTelemetry)
-        .where(UserGameplayTelemetry.user_id == current_user.user_id)
-        .order_by(UserGameplayTelemetry.created_at.desc())
+        select(GameplayLevel)
+        .where(
+            GameplayLevel.user_id == current_user.user_id,
+            GameplayLevel.is_completed == True
+        )
+        .order_by(GameplayLevel.created_at.desc())
         .limit(safe_limit)
         .offset(safe_offset)
     )
     items = history_res.scalars().all()
     return [
         {
-            "session_id": str(item.session_id),
+            "session_id": str(item.level_id),
             "level_id": str(item.level_id),
             "level_number": item.level_number,
             "user_id": str(item.user_id),
@@ -427,3 +348,4 @@ async def getUserHistory(
         }
         for item in items
     ]
+

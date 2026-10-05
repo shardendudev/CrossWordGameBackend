@@ -1,6 +1,7 @@
 
 import re
 import uuid
+import secrets
 import hashlib
 import logging
 import asyncio
@@ -10,8 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.user import User
 from app.db.models.movie import Movie
-from app.db.models.telemetry import UserGameplayTelemetry, UserMovieTelemetry
-from app.db.models.hint_cache import LevelHintCache
+from app.db.models.gameplay import GameplayLevel
 from app.schemas.gameplay import LevelResponse
 from app.engine.recommender import recommendMoviesByTaste, fetchCandidateMovies
 from app.engine.csp_solver import solveCrossword, get_title_stem
@@ -19,18 +19,39 @@ from app.engine.dynamic_solver import solveDynamicFreeform
 logger = logging.getLogger(__name__)
 
 
+def hash_cell(salt: str, row: int, col: int, char: str, iterations: int = 15000) -> str:
+    """
+    Computes a salted PBKDF2-HMAC-SHA256 hash for a crossword cell.
+    Parameters align with Web Crypto API:
+      password: char.upper()
+      salt: f"{salt}:{row}:{col}"
+      iterations: 15,000 rounds
+      algorithm: SHA-256
+      dklen: 32 bytes (64 hex characters)
+    """
+    return hashlib.pbkdf2_hmac(
+        hash_name="sha256",
+        password=char.upper().encode("utf-8"),
+        salt=f"{salt}:{row}:{col}".encode("utf-8"),
+        iterations=iterations,
+        dklen=32
+    ).hex()
 
-async def generateExperimentalLevelForUser(
-    db:AsyncSession,
+
+
+
+
+async def generateLevelForUser(
+    db: AsyncSession,
     userId: str,
     requestedDifficulty: Optional[float] = None,
     excludeImdbIds: Optional[List[str]] = None,
-    rows: int= 12,
+    rows: int = 10,
     cols: int = 10,
     targetCount: int = 6
 ) -> LevelResponse:
     """
-    Experimental level generator supporting dynamic non-square grids (e.g. 12*10),
+    Unified level generator supporting dynamic non-square or 10x10 grids,
     vertical-only placement for titles > cols, and dynamic movie counts.
     """
 
@@ -54,13 +75,11 @@ async def generateExperimentalLevelForUser(
     else:
         level_number = 1
 
-    #2. fetch played IMDB IDs from Telemetry & Client Dexie Store
-    history_query = select(UserMovieTelemetry.imdb_id).where(
-        UserMovieTelemetry.user_id == userId
-    )
-
-    history_res = await db.execute(history_query)
-    played_imdb_ids = set(history_res.scalars().all())
+    # 2. Fetch played IMDB IDs from User.played_imdb_ids & Client Dexie Store
+    if user and user.played_imdb_ids:
+        played_imdb_ids = set(user.played_imdb_ids)
+    else:
+        played_imdb_ids = set()
 
     if excludeImdbIds:
         played_imdb_ids = played_imdb_ids.union(excludeImdbIds)
@@ -125,81 +144,101 @@ async def generateExperimentalLevelForUser(
     t_solver_end = time.perf_counter()
     t_total = time.perf_counter() - t_start
     logger.info(
-        f"[PERF] [EXPERIMENTAL {rows}x{cols}] Level Gen Total: {t_total*1000:.1f}ms | "
+        f"[PERF] [{rows}x{cols}] Level Gen Total: {t_total*1000:.1f}ms | "
         f"DB Fetch ({mode_used}): {(t_db_end - t_db_start)*1000:.1f}ms | "
         f"Dynamic Solver: {(t_solver_end - t_solver_start)*1000:.1f}ms | "
         f"Candidates: {len(candidate_dicts)}"
     )
 
-
-     # 7. Build Clues list, Hint Cache, and Dynamic 2D Grid
-    clues = []
-    level_id = uuid.uuid4()
-    if solution_placements:
-        grid = [["" for _ in range(cols)] for _ in range(rows)]
-        sorted_placements = sorted(
-            solution_placements,
-            key=lambda p: (p["row"], p["col"], 0 if p["direction"] == "ACROSS" else 1)
+    if not solution_placements:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unable to generate a valid crossword layout with candidate movies."
         )
-        num_map = {}
-        curr_num = 1
-        for slot in sorted_placements:
-            pos_key = (slot["row"], slot["col"])
-            if pos_key not in num_map:
-                num_map[pos_key] = curr_num
-                curr_num += 1
-            slot["number"] = num_map[pos_key]
-        for slot in sorted_placements:
-            clean_word = slot["word"]
-            imdb_id = slot.get("movie", {}).get("imdb_id")
-            m = movie_map.get(imdb_id)
-            hint_stack = build_hint_stack(m, skill_level, level_id=str(level_id))
-            initial_hint = hint_stack[0]
-            hint_cache_row = LevelHintCache(
-                level_id=level_id,
-                slot_id=slot["slot_id"],
-                imdb_id=m.imdb_id if m else None,
-                hint_stack=hint_stack,
-                revealed_up_to=1
-            )
-            db.add(hint_cache_row)
-            r, c = slot["row"], slot["col"]
-            direction = slot["direction"]
-            for idx, ch in enumerate(clean_word):
-                gr = r if direction == "ACROSS" else r + idx
-                gc = c + idx if direction == "ACROSS" else c
-                if 0 <= gr < rows and 0 <= gc < cols:
-                    grid[gr][gc] = ch
-            post_trivia = (m.awards_summary or m.iconic_dialogue or "Iconic cinema classic!") if m else ""
-            raw_title = (m.title or m.clean_title) if m else clean_word
-            matched_words = re.findall(r'[A-Za-z0-9]+', raw_title)
-            word_lengths = [len(w) for w in matched_words] if matched_words else [len(clean_word)]
-            word_pattern = f"({','.join(str(l) for l in word_lengths)})"
-            clue_obj = {
-                "slot_id": slot["slot_id"],
-                "number": slot["number"],
-                "direction": slot["direction"],
-                "row": slot["row"],
-                "col": slot["col"],
-                "length": slot["length"],
-                "word_lengths": word_lengths,
-                "word_pattern": word_pattern,
-                "imdb_id": m.imdb_id if m else None,
-                "display_title": m.title if m else clean_word,
-                "difficulty": round(m.base_difficulty, 3) if m else 0.5,
-                "hint": initial_hint["text"],
-                "hint_tier": initial_hint["tier"],
-                "hint_type": initial_hint["type"],
-                "hints_available": len(hint_stack) - 1,
-                "post_solve_trivia": post_trivia
-            }
-            clues.append(clue_obj)
-    else:
-        grid = [["" for _ in range(cols)] for _ in range(rows)]
+
+    # 7. Build Clues list, Hint Cache, and Dynamic 2D Grid
+    level_id = uuid.uuid4()
+    session_salt = secrets.token_hex(16)
+    solution_map: Dict[str, str] = {}
+    hints_data: Dict[str, Any] = {}
+    grid = [["" for _ in range(cols)] for _ in range(rows)]
+    clues = []
+    sorted_placements = sorted(
+        solution_placements,
+        key=lambda p: (p["row"], p["col"], 0 if p["direction"] == "ACROSS" else 1)
+    )
+    num_map = {}
+    curr_num = 1
+    for slot in sorted_placements:
+        pos_key = (slot["row"], slot["col"])
+        if pos_key not in num_map:
+            num_map[pos_key] = curr_num
+            curr_num += 1
+        slot["number"] = num_map[pos_key]
+
+    for slot in sorted_placements:
+        clean_word = slot["word"]
+        imdb_id = slot.get("movie", {}).get("imdb_id")
+        m = movie_map.get(imdb_id)
+        hint_stack = build_hint_stack(m, skill_level, level_id=str(level_id))
+        initial_hint = hint_stack[0]
+
+        solution_map[slot["slot_id"]] = clean_word
+        hints_data[slot["slot_id"]] = {
+            "imdb_id": m.imdb_id if m else None,
+            "revealed_up_to": 1,
+            "hint_stack": hint_stack
+        }
+
+        r, c = slot["row"], slot["col"]
+        direction = slot["direction"]
+        for idx, ch in enumerate(clean_word):
+            gr = r if direction == "ACROSS" else r + idx
+            gc = c + idx if direction == "ACROSS" else c
+            if 0 <= gr < rows and 0 <= gc < cols:
+                grid[gr][gc] = hash_cell(session_salt, gr, gc, ch)
+
+        raw_title = (m.title or m.clean_title) if m else clean_word
+        matched_words = re.findall(r'[A-Za-z0-9]+', raw_title)
+        word_lengths = [len(w) for w in matched_words] if matched_words else [len(clean_word)]
+        word_pattern = f"({','.join(str(l) for l in word_lengths)})"
+        clue_obj = {
+            "slot_id": slot["slot_id"],
+            "number": slot["number"],
+            "direction": slot["direction"],
+            "row": slot["row"],
+            "col": slot["col"],
+            "length": slot["length"],
+            "word_lengths": word_lengths,
+            "word_pattern": word_pattern,
+            "display_title": None,
+            "difficulty": round(m.base_difficulty, 3) if m else 0.5,
+            "hint": initial_hint["text"],
+            "hint_tier": initial_hint["tier"],
+            "hint_type": initial_hint["type"],
+            "hints_available": len(hint_stack) - 1,
+            "post_solve_trivia": None
+        }
+        clues.append(clue_obj)
+
+    # Single unified level session row
+    gameplay_level = GameplayLevel(
+        level_id=level_id,
+        user_id=userId,
+        level_number=level_number,
+        target_difficulty=target_diff,
+        session_salt=session_salt,
+        solution_map=solution_map,
+        hints_data=hints_data,
+        is_completed=False
+    )
+    db.add(gameplay_level)
+
     return LevelResponse(
         level_id=level_id,
         level_number=level_number,
         target_difficulty=target_diff,
+        session_salt=session_salt,
         free_hints_remaining=2,
         premium_hints_remaining=user.premium_hints_balance if user else 5,
         grid=grid,
@@ -304,192 +343,5 @@ def build_hint_stack(
     return stack
 
 
-async def generateLevelForUser(
-    db: AsyncSession,
-    userId: str,
-    requestedDifficulty: Optional[float] = None,
-    excludeImdbIds: Optional[List[str]] = None
-) -> LevelResponse:
-    import time
-    t_start = time.perf_counter()
-
-    # 1. Fetch User Profile
-    result = await db.execute(select(User).where(User.user_id == userId))
-    user = result.scalars().first()
-
-    skill_level = user.current_skill_level if user else 0.200
-    taste_vector = user.taste_vector if user else None
-    target_diff = requestedDifficulty if requestedDifficulty is not None else skill_level
-
-    if user:
-        user.levels_generated = User.levels_generated + 1
-        await db.flush()
-        await db.refresh(user)
-        level_number = user.levels_generated
-    else:
-        level_number = 1
-
-    # 2. Fetch Played IMDb IDs for this User from Postgres Telemetry
-    history_query = select(UserMovieTelemetry.imdb_id).where(
-        UserMovieTelemetry.user_id == userId
-    )
-    history_res = await db.execute(history_query)
-    played_imdb_ids = set(history_res.scalars().all())
-
-    # Combine Postgres telemetry history with client-passed Dexie.js exclusion list
-    if excludeImdbIds:
-        played_imdb_ids = played_imdb_ids.union(excludeImdbIds)
-
-
-    # 3. Fetch Candidate Movies
-    t_db_start = time.perf_counter()
-    if taste_vector is not None:
-        candidates = await recommendMoviesByTaste(db, tasteVector=taste_vector, targetDifficulty=target_diff, limit=300, margin=0.35)
-        mode_used = "Taste-Vector (pgvector)"
-    else:
-        candidates = await fetchCandidateMovies(db, targetDifficulty=target_diff, limit=300, margin=0.35)
-        mode_used = "Cold-Start (IMDb Votes)"
-
-    if not candidates or len(candidates) < 10:
-        candidates = await fetchCandidateMovies(db, targetDifficulty=0.5, limit=500, margin=0.50)
-        mode_used += " -> Fallback"
-    t_db_end = time.perf_counter()
-
-    # 4. Filter out previously played movies
-    unplayed_candidates = [m for m in candidates if m.imdb_id not in played_imdb_ids]
-    final_candidates = unplayed_candidates if len(unplayed_candidates) >= 10 else candidates
-
-    # 5. Format Candidate Dictionaries for Freeform Solver (Deduplicate by Title Stem)
-    seen_stems = set()
-    candidate_dicts = []
-    filtered_candidates = []
-    for m in final_candidates:
-        if not m.clean_title:
-            continue
-        stem = get_title_stem(m.clean_title)
-        if stem not in seen_stems:
-            seen_stems.add(stem)
-            candidate_dicts.append({
-                "imdb_id": m.imdb_id,
-                "title": m.title,
-                "clean_title": m.clean_title
-            })
-            filtered_candidates.append(m)
-
-    movie_map = {m.imdb_id: m for m in filtered_candidates if m.imdb_id}
-
-    # 6. Solve crossword layout (OR-Tools primary, greedy fallback offloaded to thread pool)
-    t_solver_start = time.perf_counter()
-    solution_placements = await asyncio.to_thread(
-        solveCrossword,
-        candidate_dicts,
-        targetCount=6,
-        gridSize=10
-    )
-    t_solver_end = time.perf_counter()
-
-    t_total = time.perf_counter() - t_start
-    logger.info(
-        f"[PERF] Level Gen Total: {t_total*1000:.1f}ms | "
-        f"DB Fetch ({mode_used}): {(t_db_end - t_db_start)*1000:.1f}ms | "
-        f"CSP Solver: {(t_solver_end - t_solver_start)*1000:.1f}ms | "
-        f"Candidates Pool: {len(candidate_dicts)}"
-    )
-
-
-    # 7. Build Clues list and Hint Cache entries
-    clues = []
-    level_id = uuid.uuid4()
-
-    if solution_placements:
-        grid = [["" for _ in range(10)] for _ in range(10)]
-
-        # Sort placements by row, then col, then direction (ACROSS first) for standard crossword numbering
-        sorted_placements = sorted(
-            solution_placements,
-            key=lambda p: (p["row"], p["col"], 0 if p["direction"] == "ACROSS" else 1)
-        )
-
-        # Assign standard crossword grid numbers (1, 2, 3...) to unique starting cells
-        num_map = {}
-        curr_num = 1
-        for slot in sorted_placements:
-            pos_key = (slot["row"], slot["col"])
-            if pos_key not in num_map:
-                num_map[pos_key] = curr_num
-                curr_num += 1
-            slot["number"] = num_map[pos_key]
-
-        for slot in sorted_placements:
-            clean_word = slot["word"]
-            # Lookup by imdb_id to avoid clean_title collision
-            imdb_id = slot.get("movie", {}).get("imdb_id")
-            m = movie_map.get(imdb_id)
-            hint_stack = build_hint_stack(m, skill_level, level_id=str(level_id))
-            initial_hint = hint_stack[0]
-
-            # Save hint stack in database (committed by the route layer, not here)
-            hint_cache_row = LevelHintCache(
-                level_id=level_id,
-                slot_id=slot["slot_id"],
-                imdb_id=m.imdb_id if m else None,
-                hint_stack=hint_stack,
-                revealed_up_to=1
-            )
-            db.add(hint_cache_row)
-
-            r, c = slot["row"], slot["col"]
-            direction = slot["direction"]
-            for idx, ch in enumerate(clean_word):
-                gr = r if direction == "ACROSS" else r + idx
-                gc = c + idx if direction == "ACROSS" else c
-                if 0 <= gr < 10 and 0 <= gc < 10:
-                    grid[gr][gc] = ch
-
-            post_trivia = (m.awards_summary or m.iconic_dialogue or "Iconic cinema classic!") if m else ""
-
-            # Extract individual word lengths from movie title (e.g. "The Batman" -> [3, 6], "(3,6)")
-            raw_title = (m.title or m.clean_title) if m else clean_word
-            matched_words = re.findall(r'[A-Za-z0-9]+', raw_title)
-            if matched_words:
-                word_lengths = [len(w) for w in matched_words]
-            else:
-                word_lengths = [len(clean_word)]
-            word_pattern = f"({','.join(str(l) for l in word_lengths)})"
-
-            clue_obj = {
-                "slot_id": slot["slot_id"],
-                "number": slot["number"],
-                "direction": slot["direction"],
-                "row": slot["row"],
-                "col": slot["col"],
-                "length": slot["length"],
-                "word_lengths": word_lengths,
-                "word_pattern": word_pattern,
-                "imdb_id": m.imdb_id if m else None,
-                "display_title": m.title if m else clean_word,
-                "difficulty": round(m.base_difficulty, 3) if m else 0.5,
-                "hint": initial_hint["text"],
-                "hint_tier": initial_hint["tier"],
-                "hint_type": initial_hint["type"],
-                "hints_available": len(hint_stack) - 1,
-                "post_solve_trivia": post_trivia
-            }
-            clues.append(clue_obj)
-
-
-        # NOTE: db.commit() is intentionally NOT called here.
-        # The route layer (generateLevel in gameplay.py) commits AFTER
-        # history_store.save_generated_level() succeeds, keeping both writes atomic.
-    else:
-        grid = [["" for _ in range(10)] for _ in range(10)]
-
-    return LevelResponse(
-        level_id=level_id,
-        level_number=level_number,
-        target_difficulty=target_diff,
-        free_hints_remaining=2,
-        premium_hints_remaining=user.premium_hints_balance if user else 5,
-        grid=grid,
-        clues=clues
-    )
+# Alias for backward compatibility
+generateExperimentalLevelForUser = generateLevelForUser
