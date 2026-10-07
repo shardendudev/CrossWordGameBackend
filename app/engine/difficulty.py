@@ -82,7 +82,7 @@ def calculatePerformanceRatio(
     - P_level > 1.0: Player solved quickly with few hints.
     - P_level < 1.0: Player took long or used many hints.
     """
-    tActual = max(timeTakenSeconds, 10.0)
+    tActual = max(float(timeTakenSeconds), 5.0)
     # Clamp timeFactor between 0.2x and 2.5x to prevent extreme spikes while staying responsive
     rawTimeFactor = expectedTimeSeconds / tActual
     timeFactor = min(2.5, max(0.2, rawTimeFactor))
