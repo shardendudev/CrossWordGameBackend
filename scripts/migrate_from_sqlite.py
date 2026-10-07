@@ -108,8 +108,14 @@ async def stage_2_calculate_difficulty_and_embeddings():
         updated_count = 0
         for m in movies:
 
-            #1. Calculate logarithmic base difficulty
-            m.base_difficulty = calculateBaseDifficulty(imdbVotes=m.imdb_votes)
+            #1. Calculate multi-attribute base difficulty
+            m.base_difficulty = calculateBaseDifficulty(
+                imdbVotes=m.imdb_votes,
+                imdbRating=m.imdb_rating,
+                budget=m.budget,
+                revenue=m.revenue,
+                awardsSummary=m.awards_summary,
+            )
 
             #2. Build dictionary and generate 1024-dim bge-m3 embedding
             movie_dict = {
