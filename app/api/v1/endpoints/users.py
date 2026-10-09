@@ -31,7 +31,7 @@ async def createUser(
     
     # Check if username is already taken
     existing_user_res = await db.execute(select(User).where(User.user_id == verified_uid))
-    existing_user = existing_user_res.scalars().first();
+    existing_user = existing_user_res.scalars().first()
     if existing_user:
         logger.warning("User with user_id '%s' already exists. Returning profile.", verified_uid)
         return existing_user

@@ -25,6 +25,7 @@ from app.schemas.gameplay import (
 )
 from app.engine.synthesizer import (generateLevelForUser, generateExperimentalLevelForUser)
 from app.engine.difficulty import (
+    calculateExpectedTime,
     calculatePerformanceRatio,
     updateUserSkill,
     updateTasteVector
@@ -260,16 +261,19 @@ async def submitTelemetry(
         existing_played = set(user.played_imdb_ids or [])
         user.played_imdb_ids = list(existing_played.union(imdb_ids))
 
-    # Compute average hint depth (0.0 to 1.0)
-    avg_hint_depth = (total_depth_sum / len(imdb_ids)) if imdb_ids else 0.0
+    word_count = len(level.hints_data) if level.hints_data else len(imdb_ids)
+    expected_time = calculateExpectedTime(
+        wordCount = word_count,
+        baseDifficulty = level.target_difficulty 
+    )
 
-    prev_skill = user.current_skill_level
+    prev_skill = user.current_skill_level 
     p_level = calculatePerformanceRatio(
         timeTakenSeconds=payload.time_taken_seconds,
+        expectedTimeSeconds=expected_time,
         freeHints=payload.free_hints_used,
         premiumHints=payload.premium_hints_used,
-        errors=payload.cell_error_count,
-        avgHintDepth=avg_hint_depth
+        errors=payload.cell_error_count
     )
     new_skill = updateUserSkill(currentSkill=prev_skill, pLevel=p_level)
     skill_delta = round(new_skill - prev_skill, 3)
